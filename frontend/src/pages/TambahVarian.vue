@@ -6,7 +6,7 @@
         <h1>{{ pageTitle }}</h1>
         <small class="subtitle">{{ pageSubtitle }}</small>
       </div>
-      <div class="header-actions" v-if="selectedItem && canPrepareMissingVariant(selectedItem)">
+      <div class="header-actions" v-if="isShopeeFlow && selectedItem && canPrepareMissingVariant(selectedItem)">
         <button
           type="button"
           class="primary"
@@ -73,6 +73,75 @@
         <div v-else class="group-empty">
           Tidak ada produk untuk filter yang dipilih.
         </div>
+
+        <section v-if="activeGroup" class="product-detail-panel">
+          <div class="detail-panel-head">
+            <div>
+              <strong>Detail produk dan varian</strong>
+              <small>{{ activeGroup.variants.length }} varian dalam produk ini</small>
+            </div>
+            <span :class="['badge', activeGroup.status]">{{ labelStatus(activeGroup.status) }}</span>
+          </div>
+
+          <div class="detail-summary-grid">
+            <article>
+              <span>Stock Master</span>
+              <strong>{{ activeGroup.total_stock }}</strong>
+            </article>
+            <article>
+              <span>Shopee</span>
+              <strong>{{ activeGroup.shopee.present }} varian</strong>
+              <small>Stok {{ activeGroup.shopee.total_stock }} | {{ groupShopeePriceSummary(activeGroup) }}</small>
+            </article>
+            <article>
+              <span>TikTok</span>
+              <strong>{{ activeGroup.tiktok.present }} varian</strong>
+              <small>Stok {{ activeGroup.tiktok.total_stock }} | {{ groupChannelPriceSummary(activeGroup, 'tiktok') }}</small>
+            </article>
+          </div>
+
+          <div class="detail-variant-list">
+            <button
+              v-for="variant in activeGroup.variants"
+              :key="`detail-${variant.id}`"
+              type="button"
+              :class="['detail-variant-item', { active: selectedItem?.id === variant.id }]"
+              @click="selectItem(variant)"
+            >
+              <span class="detail-variant-media">
+                <img
+                  v-if="variant.tiktok?.image_url || variant.shopee?.image_url"
+                  :src="variant.tiktok?.image_url || variant.shopee?.image_url"
+                  :alt="resolveTargetVariantName(variant) || variant.variant_name || 'Varian'"
+                />
+                <span v-else class="variant-thumb-fallback">{{ initials(resolveTargetVariantName(variant) || variant.variant_name || 'V') }}</span>
+              </span>
+              <span class="detail-variant-main">
+                <strong>{{ resolveTargetVariantName(variant) || variant.variant_name || 'Tanpa Varian' }}</strong>
+                <small>SKU internal: {{ variant.internal_sku || '-' }}</small>
+                <small>TikTok: {{ variant.tiktok?.seller_sku || '-' }}</small>
+                <small>Shopee: {{ variant.shopee?.seller_sku || variant.seller_sku || '-' }}</small>
+              </span>
+              <span class="detail-marketplace-cols">
+                <span>
+                  <em>Master</em>
+                  <strong>Stok {{ displayStock(variant.stock_qty) }}</strong>
+                </span>
+                <span>
+                  <em>Shopee</em>
+                  <strong>Stok {{ displayStock(variant.shopee?.stock_qty) }}</strong>
+                  <small>{{ displayPrice(variant.shopee?.price ?? variant.shopee_variant_price) }}</small>
+                </span>
+                <span>
+                  <em>TikTok</em>
+                  <strong>Stok {{ hasTiktokActual(variant) ? displayStock(variant.tiktok?.stock_qty) : '-' }}</strong>
+                  <small>{{ displayPrice(variant.tiktok?.price) }}</small>
+                </span>
+              </span>
+              <span :class="['badge', variant.status]">{{ labelStatus(variant.status) }}</span>
+            </button>
+          </div>
+        </section>
 
         <div class="table-filters">
           <label>
@@ -716,10 +785,10 @@ const addVariantSubmitLabel = computed(() => {
 const statusOptions = computed(() => {
   const primaryMissingStatus = isShopeeFlow.value
     ? { value: 'shopee_missing', label: 'Belum Ada Variant Shopee' }
-    : { value: 'tiktok_missing', label: 'Belum Ada Variant TikTok' }
+    : { value: 'tiktok_actual', label: 'Varian Produk TikTok' }
   const secondaryMissingStatus = isShopeeFlow.value
     ? { value: 'tiktok_missing', label: 'Belum Ada Variant TikTok' }
-    : { value: 'shopee_missing', label: 'Belum Ada Variant Shopee' }
+    : { value: 'tiktok_missing', label: 'Shopee Ada, TikTok Belum Ada' }
 
   return [
     { value: 'all', label: 'Semua' },
@@ -732,21 +801,24 @@ const statusOptions = computed(() => {
 const tableFlowOptions = computed(() => [
   isShopeeFlow.value
     ? { value: 'tiktok-to-shopee', label: 'TikTok ke Shopee' }
-    : { value: 'shopee-to-tiktok', label: 'Shopee ke TikTok' }
+    : { value: 'shopee-to-tiktok', label: 'Produk TikTok' }
 ])
 const tableFlowHint = computed(() => `Mode tabel: ${tableFlowOptions.value[0].label}.`)
 const filters = reactive({
   search: '',
-  status: isShopeeFlow.value ? 'shopee_missing' : 'tiktok_missing',
+  status: isShopeeFlow.value ? 'shopee_missing' : 'tiktok_actual',
   flow: isShopeeFlow.value ? 'tiktok-to-shopee' : 'shopee-to-tiktok'
 })
 const pageCache = new Map()
 const flowKey = computed(() => filters.flow || route.meta?.flow || tableFlowOptions.value[0].value)
-const defaultFlowStatus = computed(() => isShopeeFlow.value ? 'shopee_missing' : 'tiktok_missing')
+const defaultFlowStatus = computed(() => isShopeeFlow.value ? 'shopee_missing' : 'tiktok_actual')
 const defaultFlowValue = computed(() => isShopeeFlow.value ? 'tiktok-to-shopee' : 'shopee-to-tiktok')
 const applyDefaultFlowFilters = () => {
   filters.flow = defaultFlowValue.value
   filters.status = defaultFlowStatus.value
+  addVariantTool.use_real_shopee_sku = isShopeeFlow.value
+    ? addVariantTool.use_real_shopee_sku
+    : false
 }
 const form = reactive({
   stock_master_id: null,
@@ -897,6 +969,10 @@ const resolveStandardSellerSku = (source, variantName = '', productId = '') => {
 const formatDate = (value) => value ? new Intl.DateTimeFormat('id-ID', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }).format(new Date(value)) : '-'
 const initials = (name) => String(name || 'SK').split(' ').slice(0, 2).map((word) => word[0]).join('').toUpperCase()
 const labelStatus = (status) => {
+  if (!isShopeeFlow.value && status === 'shopee_missing') {
+    return 'Varian TikTok'
+  }
+
   const labels = {
     ready_to_sync: 'Siap Disinkronkan',
     shopee_missing: 'Belum Ada Variant Shopee',
@@ -1179,6 +1255,7 @@ const getGroupKey = (item) => {
   const shopeeItemId = resolveShopeeItemId(item)
   const tiktokProductId = resolveTiktokProductId(item)
 
+  if (!isShopeeFlow.value && tiktokProductId) return `tiktok:${tiktokProductId}`
   if (!isShopeeFlow.value && shopeeItemId) return `shopee:${shopeeItemId}`
   if (isShopeeFlow.value && tiktokProductId) return `tiktok:${tiktokProductId}`
 
@@ -1264,10 +1341,10 @@ const resolveTargetVariantName = (source) => String(
       ''
     )
     : (
-      source?.shopee?.variant_name ||
-      source?.variant_name ||
       source?.tiktok?.variant_name ||
       source?.tiktok?.sku_name ||
+      source?.variant_name ||
+      source?.shopee?.variant_name ||
       ''
     )
 ).trim()
@@ -1623,7 +1700,8 @@ const fillAddVariantToolFromItem = (item, contextProductId = '') => {
       ))
     : resolveStandardSellerSku(item, colorName, contextProductId || resolveShopeeItemId(item) || resolveSelectedShopeeItemId())
   const imageUri = String(
-    (isShopeeFlow.value ? item.tiktok?.image_url : item.shopee?.image_url) ||
+    item.tiktok?.image_url ||
+    (!isShopeeFlow.value ? item.shopee?.image_url : '') ||
     item.image_url ||
     item.shopee_model_image_url ||
     item.shopee_product_image_url ||
@@ -1632,10 +1710,10 @@ const fillAddVariantToolFromItem = (item, contextProductId = '') => {
   ).trim()
   const priceValue = isShopeeFlow.value
     ? (item.tiktok?.price ?? item.price ?? addVariantTool.price)
-    : (item.shopee_variant_price ?? item.shopee?.price ?? item.price ?? addVariantTool.price)
+    : (item.tiktok?.price ?? item.shopee_variant_price ?? item.shopee?.price ?? item.price ?? addVariantTool.price)
   const quantityValue = isShopeeFlow.value
     ? (item.tiktok?.stock_qty ?? item.stock_qty ?? 0)
-    : (item.shopee_variant_stock ?? item.shopee?.stock_qty ?? item.stock_qty ?? 0)
+    : (item.tiktok?.stock_qty ?? item.shopee_variant_stock ?? item.shopee?.stock_qty ?? item.stock_qty ?? 0)
   const normalizedPrice = normalizePriceInput(
     priceValue,
     normalizePriceInput(addVariantTool.price, '50000')
@@ -1725,11 +1803,17 @@ const groupedItems = computed(() => {
 
   items.value.forEach((item) => {
     const key = getGroupKey(item)
+    const preferredProductName = isShopeeFlow.value
+      ? (item.product_name || item.tiktok?.product_name || item.shopee?.product_name || 'Produk')
+      : (item.tiktok?.product_name || item.product_name || item.shopee?.product_name || 'Produk')
+    const preferredImageUrl = isShopeeFlow.value
+      ? (item.image_url || item.tiktok?.image_url || item.shopee?.image_url || '')
+      : (item.tiktok?.image_url || item.image_url || item.shopee?.image_url || '')
     if (!groups.has(key)) {
       groups.set(key, {
         key,
-        name: item.product_name || item.shopee?.product_name || item.tiktok?.product_name || 'Produk',
-        image_url: item.image_url || item.shopee?.image_url || item.tiktok?.image_url || '',
+        name: preferredProductName,
+        image_url: preferredImageUrl,
         variants: [],
         total_stock: 0,
         shopee: { present: 0, missing: 0, total_stock: 0, product_name: item.shopee?.product_name || '' },
@@ -1757,9 +1841,10 @@ const groupedItems = computed(() => {
     }
 
     if (item.tiktok?.status === 'suggested') group.tiktok.suggested += 1
-    if (!group.image_url) group.image_url = item.image_url || item.shopee?.image_url || item.tiktok?.image_url || ''
+    if (!group.image_url) group.image_url = preferredImageUrl
     if (!group.shopee.product_name && item.shopee?.product_name) group.shopee.product_name = item.shopee.product_name
     if (!group.tiktok.product_name && item.tiktok?.product_name) group.tiktok.product_name = item.tiktok.product_name
+    if (!isShopeeFlow.value && item.tiktok?.product_name) group.name = item.tiktok.product_name
   })
 
   return Array.from(groups.values()).map((group) => {
@@ -2156,6 +2241,88 @@ const applyDefaultTiktokSkuPreSale = (sku, defaultPreSale) => {
   return sku
 }
 
+const normalizeTiktokWeightToGram = (packageWeight) => {
+  const source = packageWeight && typeof packageWeight === 'object' && !Array.isArray(packageWeight)
+    ? packageWeight
+    : {}
+  const unit = String(source.unit || '').trim().toUpperCase()
+  const numericValue = Number(String(source.value ?? '').trim().replace(',', '.'))
+  let grams = Number.isFinite(numericValue) && numericValue > 0 ? numericValue : 200
+
+  if (['KILOGRAM', 'KILOGRAMS', 'KG'].includes(unit)) {
+    grams *= 1000
+  }
+
+  return {
+    ...source,
+    unit: 'GRAM',
+    value: String(Math.max(1, Math.round(grams)))
+  }
+}
+
+const normalizeTiktokPayloadWeightUnitsToGram = (value, key = '') => {
+  if (Array.isArray(value)) {
+    return value.map((item) => normalizeTiktokPayloadWeightUnitsToGram(item))
+  }
+
+  if (!value || typeof value !== 'object') {
+    return value
+  }
+
+  const normalized = { ...value }
+  const isWeightNode = /(^|_)weight$/i.test(String(key || '')) && 'unit' in normalized && 'value' in normalized
+  if (isWeightNode) {
+    return normalizeTiktokWeightToGram(normalized)
+  }
+
+  Object.keys(normalized).forEach((childKey) => {
+    normalized[childKey] = normalizeTiktokPayloadWeightUnitsToGram(normalized[childKey], childKey)
+  })
+
+  return normalized
+}
+
+const normalizeTiktokDimensionToCentimeter = (dimensions) => {
+  const source = dimensions && typeof dimensions === 'object' && !Array.isArray(dimensions)
+    ? dimensions
+    : {}
+  const normalizeDimensionValue = (raw) => {
+    const numeric = Number(String(raw ?? '').trim().replace(',', '.'))
+    return String(Math.max(1, Math.round(Number.isFinite(numeric) && numeric > 0 ? numeric : 1)))
+  }
+
+  return {
+    ...source,
+    unit: 'CENTIMETER',
+    height: normalizeDimensionValue(source.height),
+    length: normalizeDimensionValue(source.length),
+    width: normalizeDimensionValue(source.width)
+  }
+}
+
+const normalizeTiktokPayloadDimensionUnits = (value, key = '') => {
+  if (Array.isArray(value)) {
+    return value.map((item) => normalizeTiktokPayloadDimensionUnits(item))
+  }
+
+  if (!value || typeof value !== 'object') {
+    return value
+  }
+
+  const normalized = { ...value }
+  const isDimensionNode = /(^|_)dimensions$/i.test(String(key || '')) &&
+    ('height' in normalized || 'length' in normalized || 'width' in normalized)
+  if (isDimensionNode) {
+    return normalizeTiktokDimensionToCentimeter(normalized)
+  }
+
+  Object.keys(normalized).forEach((childKey) => {
+    normalized[childKey] = normalizeTiktokPayloadDimensionUnits(normalized[childKey], childKey)
+  })
+
+  return normalized
+}
+
 const buildAddVariantRequestPreview = () => {
   if (isShopeeFlow.value) {
     return JSON.stringify(buildShopeeAddVariantPayload(), null, 2)
@@ -2176,6 +2343,8 @@ const buildAddVariantRequestPreview = () => {
     titleSource?.product_name ||
     DEFAULT_PRODUCT_NAME
   ).trim() || DEFAULT_PRODUCT_NAME
+  const fallbackSkuWeight = normalizeTiktokWeightToGram(productBody.package_weight)
+  const fallbackSkuDimensions = normalizeTiktokDimensionToCentimeter(productBody.package_dimensions)
 
   const existingAttribute = existingSkus.find((sku) => sku?.sales_attributes?.[0]?.id || sku?.sales_attributes?.[0]?.name)?.sales_attributes?.[0] || {}
 
@@ -2357,6 +2526,8 @@ const buildAddVariantRequestPreview = () => {
         quantity: quantityValue,
         warehouse_id: TIKTOK_VARIANT_WAREHOUSE_ID
       }],
+      sku_weight: cloneJson(fallbackSkuWeight),
+      sku_dimensions: cloneJson(fallbackSkuDimensions),
       pre_sale: cloneJson(defaultSkuPreSale) || { type: 'NONE' }
     }
     applyDefaultTiktokSkuPreSale(generatedSku, defaultSkuPreSale)
@@ -2435,19 +2606,21 @@ const buildAddVariantRequestPreview = () => {
 
   if (!productBody.package_dimensions || typeof productBody.package_dimensions !== 'object') {
     productBody.package_dimensions = {
-      height: '0',
-      length: '0',
+      height: '1',
+      length: '1',
       unit: 'CENTIMETER',
-      width: '0'
+      width: '1'
     }
   }
 
   if (!productBody.package_weight || typeof productBody.package_weight !== 'object') {
     productBody.package_weight = {
-      unit: 'KILOGRAM',
-      value: '0'
+      unit: 'GRAM',
+      value: '200'
     }
   }
+  Object.assign(productBody, normalizeTiktokPayloadWeightUnitsToGram(productBody))
+  Object.assign(productBody, normalizeTiktokPayloadDimensionUnits(productBody))
 
   if (!productBody.shipping_insurance_requirement) {
     productBody.shipping_insurance_requirement = 'REQUIRED'
@@ -3242,6 +3415,8 @@ onMounted(async () => {
 
   if (isShopeeFlow.value) {
     addVariantTool.product_id = ''
+  } else {
+    addVariantTool.use_real_shopee_sku = false
   }
 
   await Promise.all([
@@ -3288,6 +3463,28 @@ onMounted(async () => {
 .group-price-summary em { color:#64748b; font-style:normal; font-size:11px; line-height:1.2; }
 .group-price-summary strong { color:#0f172a; font-size:12px; line-height:1.25; margin:0; }
 .group-empty { margin-bottom:12px; padding:12px; border:1px dashed #cbd5e1; border-radius:8px; color:#64748b; background:#f8fafc; }
+.product-detail-panel { margin:0 0 12px; border:1px solid #d9e2ec; border-radius:8px; background:#fff; padding:12px; }
+.detail-panel-head { display:flex; align-items:flex-start; justify-content:space-between; gap:12px; margin-bottom:10px; }
+.detail-panel-head strong { display:block; color:#111827; font-size:15px; line-height:1.25; }
+.detail-panel-head small { display:block; color:#64748b; font-size:12px; margin-top:3px; }
+.detail-summary-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; margin-bottom:10px; }
+.detail-summary-grid article { border:1px solid #e5e7eb; border-radius:6px; background:#f8fafc; padding:9px 10px; min-width:0; }
+.detail-summary-grid span { display:block; color:#64748b; font-size:11px; font-weight:800; text-transform:uppercase; }
+.detail-summary-grid strong { display:block; color:#0f172a; font-size:14px; line-height:1.25; margin-top:3px; }
+.detail-summary-grid small { display:block; color:#475569; font-size:11px; line-height:1.3; margin-top:3px; overflow-wrap:anywhere; }
+.detail-variant-list { display:grid; gap:7px; max-height:360px; overflow:auto; scrollbar-gutter:stable; }
+.detail-variant-item { width:100%; display:grid; grid-template-columns:48px minmax(170px,1.1fr) minmax(280px,1.7fr) auto; align-items:center; gap:10px; text-align:left; border:1px solid #e5e7eb; border-radius:6px; background:#fff; color:#0f172a; padding:8px; cursor:pointer; }
+.detail-variant-item:hover,.detail-variant-item.active { background:#eff6ff; border-color:#bfdbfe; }
+.detail-variant-media img,.detail-variant-media .variant-thumb-fallback { width:48px; height:48px; border-radius:6px; object-fit:cover; border:1px solid #e2e8f0; background:#eef2f7; }
+.detail-variant-media .variant-thumb-fallback { display:grid; place-items:center; color:#64748b; font-size:11px; font-weight:800; }
+.detail-variant-main { min-width:0; display:grid; gap:2px; }
+.detail-variant-main strong { color:#111827; font-size:13px; line-height:1.25; overflow-wrap:anywhere; }
+.detail-variant-main small { color:#64748b; font-size:11px; line-height:1.25; overflow-wrap:anywhere; }
+.detail-marketplace-cols { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:7px; min-width:0; }
+.detail-marketplace-cols > span { display:grid; gap:2px; align-content:start; min-height:54px; border:1px solid #edf0f5; border-radius:6px; background:#fafafa; padding:7px 8px; }
+.detail-marketplace-cols em { color:#64748b; font-style:normal; font-size:10px; font-weight:800; text-transform:uppercase; }
+.detail-marketplace-cols strong { color:#0f172a; font-size:12px; line-height:1.2; }
+.detail-marketplace-cols small { color:#475569; font-size:11px; line-height:1.2; }
 .empty-row { text-align:center; color:#64748b; padding:20px !important; }
 .table-filters { display:flex; align-items:end; gap:12px; margin: 0 0 12px; padding: 12px; background:#f8fafc; border:1px solid #e5e7eb; border-radius:8px; }
 .table-filters label { min-width: 260px; }
@@ -3448,7 +3645,7 @@ td small { color:#64748b; display:block; margin-top:2px; line-height:1.15; }
 .dialog-meta dt { color:#64748b; font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.08em; margin-bottom:4px; }
 .dialog-meta dd { margin:0; color:#0f172a; font-size:13px; overflow-wrap:anywhere; }
 .dialog-actions { display:flex; justify-content:flex-end; gap:10px; }
-@media (max-width: 1180px) { .layout { grid-template-columns:1fr; } .api-testing-tool, .variant-tool { grid-template-columns:1fr; } .api-left { border-right:0; border-bottom:1px solid #e5e7eb; } }
-@media (max-width: 820px) { .page-shell { margin-left:0; padding:16px; } .summary-grid,.control-band { grid-template-columns:1fr; flex-direction:column; align-items:stretch; } .page-header { align-items:flex-start; flex-direction:column; } .api-version-row { flex-direction:column; align-items:stretch; } .api-shop-link { position:static; display:block; margin-bottom:10px; } .api-left, .api-right { padding:14px; } .dialog-meta { grid-template-columns:1fr; } .dialog-actions { flex-direction:column; } .dialog-actions .ghost, .dialog-actions .primary { width:100%; } .table-wrap { height: auto; max-height: none; overflow: visible; } }
+@media (max-width: 1180px) { .layout { grid-template-columns:1fr; } .api-testing-tool, .variant-tool { grid-template-columns:1fr; } .api-left { border-right:0; border-bottom:1px solid #e5e7eb; } .detail-variant-item { grid-template-columns:48px minmax(0,1fr); align-items:start; } .detail-marketplace-cols,.detail-variant-item > .badge { grid-column:2; } }
+@media (max-width: 820px) { .page-shell { margin-left:0; padding:16px; } .summary-grid,.control-band,.detail-summary-grid,.detail-marketplace-cols { grid-template-columns:1fr; flex-direction:column; align-items:stretch; } .page-header { align-items:flex-start; flex-direction:column; } .api-version-row { flex-direction:column; align-items:stretch; } .api-shop-link { position:static; display:block; margin-bottom:10px; } .api-left, .api-right { padding:14px; } .dialog-meta { grid-template-columns:1fr; } .dialog-actions { flex-direction:column; } .dialog-actions .ghost, .dialog-actions .primary { width:100%; } .table-wrap { height: auto; max-height: none; overflow: visible; } }
 </style>
 

@@ -5588,8 +5588,10 @@ class OmnichannelController extends Controller
 
                 $matchesStatus = match ($status) {
                     'ready_to_sync', 'shopee_missing', 'tiktok_missing', 'belum_ada_variant' => $item['status'] === $status,
+                    'tiktok_actual' => data_get($item, 'tiktok.status') === 'mapped'
+                        && data_get($item, 'tiktok.source') !== 'suggested_product',
                     'all' => match ($flow) {
-                        'shopee-to-tiktok' => in_array($item['status'], ['ready_to_sync', 'tiktok_missing'], true),
+                        'shopee-to-tiktok' => in_array($item['status'], ['ready_to_sync', 'tiktok_missing', 'shopee_missing'], true),
                         'tiktok-to-shopee' => in_array($item['status'], ['ready_to_sync', 'shopee_missing'], true),
                         default => true,
                     },
@@ -8894,6 +8896,8 @@ class OmnichannelController extends Controller
 
         try {
             $decodedPayload = $this->normalizeTiktokGeneratedPayloadDefaults($decodedPayload);
+            $decodedPayload = $this->normalizeTiktokGeneratedPayloadWeights($decodedPayload);
+            $decodedPayload = $this->normalizeTiktokGeneratedPayloadDimensions($decodedPayload);
             $decodedPayload = $this->normalizeTiktokGeneratedPayloadImages($decodedPayload, $accessToken);
         } catch (\Throwable $exception) {
             return response()->json([
@@ -8983,6 +8987,148 @@ class OmnichannelController extends Controller
         }
 
         return $payload;
+    }
+
+    private function normalizeTiktokGeneratedPayloadDimensions(array $payload): array
+    {
+        $payload = $this->normalizeTiktokDimensionNodes($payload);
+
+        if (! is_array($payload['package_dimensions'] ?? null)) {
+            $payload['package_dimensions'] = $this->normalizedTiktokDimensions([]);
+        }
+
+        $fallbackDimensions = $this->normalizedTiktokDimensions(is_array($payload['package_dimensions'] ?? null) ? $payload['package_dimensions'] : []);
+        foreach ($this->tiktokSkuListPaths() as $path) {
+            $skus = data_get($payload, $path);
+            if (! is_array($skus)) {
+                continue;
+            }
+
+            foreach ($skus as $skuIndex => $sku) {
+                if (! is_array($sku)) {
+                    continue;
+                }
+
+                $skuDimensions = is_array($sku['sku_dimensions'] ?? null)
+                    ? $sku['sku_dimensions']
+                    : $fallbackDimensions;
+                data_set($payload, $path.'.'.$skuIndex.'.sku_dimensions', $this->normalizedTiktokDimensions($skuDimensions));
+            }
+        }
+
+        return $payload;
+    }
+
+    private function normalizeTiktokDimensionNodes(array $payload): array
+    {
+        foreach ($payload as $key => $value) {
+            if ($this->isTiktokDimensionNodeKey((string) $key)) {
+                $payload[$key] = $this->normalizedTiktokDimensions(is_array($value) ? $value : []);
+                continue;
+            }
+
+            if (is_array($value)) {
+                $payload[$key] = $this->normalizeTiktokDimensionNodes($value);
+            }
+        }
+
+        return $payload;
+    }
+
+    private function isTiktokDimensionNodeKey(string $key): bool
+    {
+        return $key === 'dimensions' || str_ends_with($key, '_dimensions');
+    }
+
+    private function normalizedTiktokDimensions(array $dimensions): array
+    {
+        $normalize = static function (mixed $value): string {
+            $raw = str_replace(',', '.', trim((string) $value));
+            $numeric = is_numeric($raw) ? (float) $raw : 0.0;
+
+            return (string) max(1, (int) round($numeric > 0 ? $numeric : 1));
+        };
+
+        return array_merge($dimensions, [
+            'unit' => 'CENTIMETER',
+            'height' => $normalize($dimensions['height'] ?? null),
+            'length' => $normalize($dimensions['length'] ?? null),
+            'width' => $normalize($dimensions['width'] ?? null),
+        ]);
+    }
+
+    private function normalizeTiktokGeneratedPayloadWeights(array $payload): array
+    {
+        $payload = $this->normalizeTiktokWeightNodes($payload);
+
+        if (! is_array($payload['package_weight'] ?? null)) {
+            $payload['package_weight'] = $this->normalizedTiktokWeight([]);
+        }
+
+        $fallbackWeight = $this->normalizedTiktokWeight(is_array($payload['package_weight'] ?? null) ? $payload['package_weight'] : []);
+        foreach ($this->tiktokSkuListPaths() as $path) {
+            $skus = data_get($payload, $path);
+            if (! is_array($skus)) {
+                continue;
+            }
+
+            foreach ($skus as $skuIndex => $sku) {
+                if (! is_array($sku)) {
+                    continue;
+                }
+
+                $skuWeight = is_array($sku['sku_weight'] ?? null)
+                    ? $sku['sku_weight']
+                    : $fallbackWeight;
+                data_set($payload, $path.'.'.$skuIndex.'.sku_weight', $this->normalizedTiktokWeight($skuWeight));
+            }
+        }
+
+        return $payload;
+    }
+
+    private function tiktokSkuListPaths(): array
+    {
+        return ['skus', 'data.skus', 'data.product.skus', 'product.skus'];
+    }
+
+    private function normalizeTiktokWeightNodes(array $payload): array
+    {
+        foreach ($payload as $key => $value) {
+            if ($this->isTiktokWeightNodeKey((string) $key)) {
+                $payload[$key] = $this->normalizedTiktokWeight(is_array($value) ? $value : []);
+                continue;
+            }
+
+            if (is_array($value)) {
+                $payload[$key] = $this->normalizeTiktokWeightNodes($value);
+            }
+        }
+
+        return $payload;
+    }
+
+    private function isTiktokWeightNodeKey(string $key): bool
+    {
+        return $key === 'weight' || str_ends_with($key, '_weight');
+    }
+
+    private function normalizedTiktokWeight(array $packageWeight): array
+    {
+        $unit = strtoupper(trim((string) ($packageWeight['unit'] ?? '')));
+        $rawValue = str_replace(',', '.', trim((string) ($packageWeight['value'] ?? '')));
+        $value = is_numeric($rawValue) ? (float) $rawValue : 0.0;
+
+        if ($value <= 0) {
+            $value = 200.0;
+        } elseif (in_array($unit, ['KILOGRAM', 'KILOGRAMS', 'KG'], true)) {
+            $value *= 1000;
+        }
+
+        return array_merge($packageWeight, [
+            'unit' => 'GRAM',
+            'value' => (string) max(1, (int) round($value)),
+        ]);
     }
 
     private function resolveTiktokDefaultSkuPreSale(array $skus): array
