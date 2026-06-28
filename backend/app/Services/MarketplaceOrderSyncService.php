@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use App\Http\Controllers\OmnichannelController;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 
 class MarketplaceOrderSyncService
@@ -187,15 +188,23 @@ class MarketplaceOrderSyncService
                 continue;
             }
 
-            $result = $this->processTiktokOrder($orderId, $stockEvent, ['poll_order' => $order]);
-            $processed++;
-            if (($result['status'] ?? '') === 'success') {
+            $result = $this->processTiktokOrder($orderId, $stockEvent, [
+                'poll_order' => $order,
+                'poll_time_from' => $timeFrom,
+                'poll_time_to' => $timeTo,
+            ]);
+            if (($result['status'] ?? '') === 'skipped') {
+                $skipped++;
+            } elseif (($result['status'] ?? '') === 'success') {
+                $processed++;
                 $success++;
                 $this->syncService->logSync('tiktok_order', 'shopee', $orderId, null, null, 'success', sprintf('TikTok order %s %s selesai.', $orderId, $stockEvent));
             } elseif (($result['status'] ?? '') === 'warning') {
+                $processed++;
                 $failed++;
                 $messages[] = $orderId.': '.($result['message'] ?? 'warning');
             } else {
+                $processed++;
                 $failed++;
                 $messages[] = $orderId.': '.($result['message'] ?? 'gagal');
             }
@@ -258,6 +267,35 @@ class MarketplaceOrderSyncService
             return [
                 'status' => 'success',
                 'message' => sprintf('Order TikTok %s dilewati karena status %s belum mengubah stok.', $orderId, $status),
+                'order_id' => $orderId,
+                'success' => 0,
+                'skipped' => 1,
+                'failed' => 0,
+                'items' => [],
+            ];
+        }
+
+        $staleSale = $this->staleTiktokSaleFromPolling($stockEvent, $order, $payload);
+        if ($staleSale !== null) {
+            $message = $staleSale['sale_time'] instanceof Carbon
+                ? sprintf(
+                    'TikTok order %s TIKTOK_STALE_SALE dilewati: waktu sale %s lebih lama dari window polling mulai %s.',
+                    $orderId,
+                    $staleSale['sale_time']->toDateTimeString(),
+                    $staleSale['poll_time_from']->toDateTimeString()
+                )
+                : sprintf(
+                    'TikTok order %s TIKTOK_STALE_SALE dilewati: waktu sale tidak tersedia pada detail/list order, window polling mulai %s. Demi keamanan stok, sale dari polling tanpa waktu order tidak dipush.',
+                    $orderId,
+                    $staleSale['poll_time_from']->toDateTimeString()
+                );
+            if (! $this->alreadyLogged('tiktok_order', $orderId, 'TIKTOK_STALE_SALE', $orderId, ['skipped'])) {
+                $this->syncService->logSync('tiktok_order', 'shopee', $orderId, null, null, 'skipped', $message);
+            }
+
+            return [
+                'status' => 'skipped',
+                'message' => $message,
                 'order_id' => $orderId,
                 'success' => 0,
                 'skipped' => 1,
@@ -525,12 +563,88 @@ class MarketplaceOrderSyncService
         return null;
     }
 
+    private function staleTiktokSaleFromPolling(string $stockEvent, array $order, array $payload): ?array
+    {
+        if ($stockEvent !== 'TIKTOK_SALE') {
+            return null;
+        }
+
+        $pollTimeFrom = $this->tiktokTimestampToCarbon($payload['poll_time_from'] ?? null);
+        if ($pollTimeFrom === null) {
+            return null;
+        }
+
+        $saleTime = $this->tiktokSaleTime($order, $payload);
+        if ($saleTime === null) {
+            return [
+                'sale_time' => null,
+                'poll_time_from' => $pollTimeFrom,
+            ];
+        }
+
+        if ($saleTime->greaterThanOrEqualTo($pollTimeFrom)) {
+            return null;
+        }
+
+        return [
+            'sale_time' => $saleTime,
+            'poll_time_from' => $pollTimeFrom,
+        ];
+    }
+
+    private function tiktokSaleTime(array $order, array $payload): ?Carbon
+    {
+        $sources = [
+            $order,
+            is_array($payload['poll_order'] ?? null) ? $payload['poll_order'] : [],
+        ];
+        $keys = ['paid_time', 'payment_time', 'paid_at', 'payment_at', 'create_time', 'create_at', 'created_time', 'created_at'];
+
+        foreach ($sources as $source) {
+            foreach ($keys as $key) {
+                $time = $this->tiktokTimestampToCarbon(data_get($source, $key));
+                if ($time !== null) {
+                    return $time;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    private function tiktokTimestampToCarbon(mixed $value): ?Carbon
+    {
+        if ($value === null || $value === '') {
+            return null;
+        }
+
+        if (is_numeric($value)) {
+            $timestamp = (int) $value;
+            if ($timestamp > 9999999999) {
+                $timestamp = (int) floor($timestamp / 1000);
+            }
+
+            return $timestamp > 0 ? Carbon::createFromTimestamp($timestamp, config('app.timezone')) : null;
+        }
+
+        try {
+            return Carbon::parse((string) $value, config('app.timezone'));
+        } catch (\Throwable) {
+            return null;
+        }
+    }
+
     private function alreadyProcessed(string $source, string $orderId, string $eventType, string $sku): bool
+    {
+        return $this->alreadyLogged($source, $orderId, $eventType, $sku, ['success']);
+    }
+
+    private function alreadyLogged(string $source, string $orderId, string $eventType, string $sku, array $statuses): bool
     {
         return DB::table('marketplace_sync_logs')
             ->where('source_marketplace', $source)
             ->where('sku', $sku)
-            ->where('status', 'success')
+            ->whereIn('status', $statuses)
             ->where('message', 'like', '%'.$orderId.' '.$eventType.'%')
             ->exists();
     }
