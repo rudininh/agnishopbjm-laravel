@@ -23,12 +23,14 @@
             <strong>{{ produkOpen ? '-' : '+' }}</strong>
           </button>
           <div v-if="produkOpen" class="submenu">
-            <RouterLink to="/mobile/kelola-produk" class="menu-mobile-highlight">📱 Kelola Produk Mobile</RouterLink>
+            <RouterLink to="/mobile/kelola-produk" class="menu-mobile-highlight">ðŸ“± Kelola Produk Mobile</RouterLink>
             <RouterLink to="/stok-shopee">Stok Shopee</RouterLink>
             <RouterLink to="/stok-tiktok">Stok TikTok</RouterLink>
             <RouterLink to="/stock-master">Stock Master</RouterLink>
             <RouterLink to="/sku-mapping">SKU Mapping</RouterLink>
             <RouterLink to="/tambah-varian-tiktok">Tambah Varian TikTok</RouterLink>
+            <RouterLink to="/tambah-semua-varian-tiktok">Tambah Semua Varian TikTok</RouterLink>
+            <RouterLink to="/sinkronisasi-varian-marketplace">Sinkronisasi Varian Marketplace</RouterLink>
             <RouterLink to="/tambah-varian-shopee">Tambah Varian Shopee</RouterLink>
             <RouterLink to="/analisa-product-variant">Analisa Product & Variant</RouterLink>
             <RouterLink to="/anomali-gambar-variant">Anomali Gambar Variant</RouterLink>

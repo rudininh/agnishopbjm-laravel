@@ -37,6 +37,11 @@ Route::post('sku-mapping/update-marketplace-sku', [OmnichannelController::class,
 Route::post('sku-mapping/update-marketplace-variant-sku', [OmnichannelController::class, 'updateMarketplaceVariantSku']);
 Route::post('sku-mapping/bulk-update-empty-shopee-variant-skus', [OmnichannelController::class, 'bulkUpdateShopeeEmptyVariantSkus']);
 Route::post('sku-mapping/prepare-missing-variant', [OmnichannelController::class, 'prepareMissingVariant']);
+Route::get('tiktok/bulk-missing-variants', [OmnichannelController::class, 'bulkTiktokMissingVariantsPreview']);
+Route::post('tiktok/bulk-missing-variants/submit', [OmnichannelController::class, 'bulkSubmitTiktokMissingVariants']);
+Route::get('tiktok/variant-reconciliation/products', [OmnichannelController::class, 'tiktokVariantReconciliationProducts']);
+Route::get('tiktok/variant-reconciliation/preview', [OmnichannelController::class, 'tiktokVariantReconciliationPreview']);
+Route::post('tiktok/variant-reconciliation/submit', [OmnichannelController::class, 'submitTiktokVariantReconciliation']);
 Route::post('tiktok-variant/action', [OmnichannelController::class, 'tiktokVariantAction']);
 Route::post('tiktok/delete-variant', [OmnichannelController::class, 'tiktokDeleteVariant']);
 Route::post('tiktok/submit-generated-payload', [OmnichannelController::class, 'tiktokSubmitGeneratedPayload']);

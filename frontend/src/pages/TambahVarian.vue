@@ -795,6 +795,7 @@ const statusOptions = computed(() => {
     { value: 'ready_to_sync', label: 'Siap Disinkronkan' },
     primaryMissingStatus,
     secondaryMissingStatus,
+    ...(!isShopeeFlow.value ? [{ value: 'tiktok_mapping_missing', label: 'SKU TikTok Ada, Mapping Belum Tersambung' }] : []),
     { value: 'belum_ada_variant', label: 'Belum Ada Variant' }
   ]
 })
@@ -977,12 +978,13 @@ const labelStatus = (status) => {
     ready_to_sync: 'Siap Disinkronkan',
     shopee_missing: 'Belum Ada Variant Shopee',
     tiktok_missing: 'Belum Ada Variant TikTok',
+    tiktok_mapping_missing: 'SKU TikTok sudah ada, mapping belum tersambung',
     belum_ada_variant: 'Belum Ada Variant'
   }
 
   return labels[status] || labels.belum_ada_variant
 }
-const channelStatusLabel = (status) => status === 'mapped' ? 'Tersimpan' : status === 'suggested' ? 'Kandidat kode variasi' : 'Belum'
+const channelStatusLabel = (status) => status === 'mapped' ? 'Tersimpan' : status === 'mapping_only' ? 'SKU ada, mapping belum tersambung' : status === 'suggested' ? 'Kandidat kode variasi' : 'Belum'
 const displayStock = (value) => value === null || value === undefined || value === '' ? '-' : Number(value)
 const hasPrice = (value) => value !== null && value !== undefined && String(value).trim() !== ''
 const displayPrice = (value) => {
@@ -1181,7 +1183,7 @@ const resolveShopeeModelId = (item) => String(
 const tiktokMatchSource = (item) => String(item?.tiktok?.source || '').trim()
 const hasTiktokActual = (item) => {
   const status = String(item?.tiktok?.status || '').trim()
-  if (status === 'mapped') {
+  if (status === 'mapped' || status === 'mapping_only') {
     return true
   }
 
@@ -1851,6 +1853,7 @@ const groupedItems = computed(() => {
     const allReadyToSync = group.variants.every((variant) => variant.status === 'ready_to_sync')
     const allShopeeMissing = group.variants.every((variant) => variant.status === 'shopee_missing')
     const allTiktokMissing = group.variants.every((variant) => variant.status === 'tiktok_missing')
+    const allTiktokMappingMissing = group.variants.every((variant) => variant.status === 'tiktok_mapping_missing')
 
     return {
       ...group,
@@ -1860,7 +1863,9 @@ const groupedItems = computed(() => {
           ? 'shopee_missing'
           : allTiktokMissing
             ? 'tiktok_missing'
-            : 'belum_ada_variant'
+            : allTiktokMappingMissing
+              ? 'tiktok_mapping_missing'
+              : 'belum_ada_variant'
     }
   })
 })
@@ -3633,6 +3638,7 @@ td small { color:#64748b; display:block; margin-top:2px; line-height:1.15; }
 .badge.ready_to_sync { background:#d1fae5; color:#047857; }
 .badge.shopee_missing { background:#fff7ed; color:#c2410c; }
 .badge.tiktok_missing { background:#eff6ff; color:#1d4ed8; }
+.badge.tiktok_mapping_missing { background:#dbeafe; color:#1e40af; }
 .badge.belum_ada_variant { background:#eef2f7; color:#475569; }
 .dialog-backdrop { position:fixed; inset:0; z-index:50; background:rgba(15,23,42,.58); display:grid; place-items:center; padding:20px; }
 .dialog-card { width:min(560px, 100%); background:#fff; border:1px solid #e2e8f0; border-radius:16px; box-shadow:0 30px 80px rgba(15,23,42,.28); padding:20px; }
