@@ -574,6 +574,86 @@ class OmnichannelControllerTest extends TestCase
         }
     }
 
+    public function test_tiktok_variant_reconciliation_products_include_detected_anomaly_candidates(): void
+    {
+        $controller = new class extends OmnichannelController {
+            protected function tiktokVariantReconciliationLinkedProducts(): array
+            {
+                return [[
+                    'shopee_item_id' => '100',
+                    'tiktok_product_id' => '900',
+                    'product_name' => 'Produk Terhubung',
+                ]];
+            }
+
+            protected function tiktokVariantReconciliationDetectedAnomalyProducts(): array
+            {
+                return [[
+                    'shopee_item_id' => '200',
+                    'tiktok_product_id' => '800',
+                    'product_name' => 'Produk Anomali',
+                    'anomaly_candidate' => true,
+                    'detected_variant_count' => 4,
+                ]];
+            }
+
+            public function selectedReconciliationProduct(string $shopeeItemId, string $tiktokProductId): ?array
+            {
+                return $this->tiktokVariantReconciliationLinkedProductChoice($shopeeItemId, $tiktokProductId);
+            }
+        };
+
+        $response = $controller->tiktokVariantReconciliationProducts()->getData(true);
+
+        $this->assertSame('200', $response['items'][0]['shopee_item_id']);
+        $this->assertSame('800', $response['items'][0]['tiktok_product_id']);
+        $this->assertTrue($response['items'][0]['anomaly_candidate']);
+        $this->assertSame(4, $response['items'][0]['detected_variant_count']);
+        $this->assertSame('100', $response['items'][1]['shopee_item_id']);
+        $this->assertSame('Produk Anomali', $controller->selectedReconciliationProduct('200', '800')['product_name']);
+    }
+
+    public function test_tiktok_variant_reconciliation_maps_mapping_only_groups_to_anomaly_candidates(): void
+    {
+        $controller = new class extends OmnichannelController {
+            protected function tiktokVariantReconciliationDetectedAnomalyGroups(): Collection
+            {
+                return collect([
+                    [
+                        'shopee_item_id' => '54256579274',
+                        'tiktok_product_id' => '1734744416845662142',
+                        'product_name' => 'Kalisha',
+                        'mapping_only_variants' => [
+                            ['shopee_model_id' => '1'],
+                            ['shopee_model_id' => '2'],
+                        ],
+                    ],
+                    [
+                        'shopee_item_id' => '300',
+                        'tiktok_product_id' => '700',
+                        'product_name' => 'Tanpa Anomali',
+                        'mapping_only_variants' => [],
+                    ],
+                ]);
+            }
+
+            public function detectedAnomalyProducts(): array
+            {
+                return $this->tiktokVariantReconciliationDetectedAnomalyProducts();
+            }
+        };
+
+        $products = $controller->detectedAnomalyProducts();
+
+        $this->assertSame([[
+            'shopee_item_id' => '54256579274',
+            'tiktok_product_id' => '1734744416845662142',
+            'product_name' => 'Kalisha',
+            'anomaly_candidate' => true,
+            'detected_variant_count' => 2,
+        ]], $products);
+    }
+
     public function test_variant_reconciliation_preview_rejects_unlinked_ids_before_refresh(): void
     {
         $controller = new class extends OmnichannelController {

@@ -9,7 +9,7 @@
       <label>Produk terhubung
         <select v-model="selectedKey" :disabled="loading" @change="resetPreview">
           <option value="">Pilih produk</option>
-          <option v-for="item in products" :key="keyOf(item)" :value="keyOf(item)">{{ item.product_name || '-' }} | Shopee {{ item.shopee_item_id }} | TikTok {{ item.tiktok_product_id }}</option>
+          <option v-for="item in products" :key="keyOf(item)" :value="keyOf(item)">{{ reconciliationProductOptionLabel(item) }}</option>
         </select>
       </label>
       <div class="run"><strong>{{ preview?.summary?.total || 0 }} varian dianalisis</strong><button class="primary" type="button" disabled title="Aktif setelah backend sinkronisasi dan verifikasi selesai">Sinkronkan Semua Anomali</button></div>
@@ -31,12 +31,30 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
 import { omnichannelService } from '@/services'
+import {
+  firstReconciliationAnomalyKey,
+  reconciliationProductKey,
+  reconciliationProductOptionLabel,
+  sortReconciliationProducts
+} from './reconciliationProductState'
 const products = ref([]); const selectedKey = ref(''); const preview = ref(null); const loading = ref(false); const notice = ref(''); const noticeTone = ref('warning')
 const selected = computed(() => products.value.find(item => keyOf(item) === selectedKey.value) || null)
-const keyOf = item => `${item.shopee_item_id}:${item.tiktok_product_id}`
+const keyOf = reconciliationProductKey
 const label = value => ({ tiktok_variant_outdated: 'Perlu update TikTok', shopee_sku_outdated: 'Perlu update Shopee', tiktok_orphan: 'Akan dihapus', manual_review: 'Review manual', no_change: 'Sesuai' }[value] || value || '-')
 const resetPreview = () => { preview.value = null; notice.value = '' }
-const loadProducts = async () => { try { products.value = (await omnichannelService.tiktokVariantReconciliationProducts()).data.items || [] } catch { notice.value = 'Daftar produk terhubung belum dapat dimuat.'; noticeTone.value = 'error' } }
+const loadProducts = async () => {
+  loading.value = true
+  try {
+    products.value = sortReconciliationProducts((await omnichannelService.tiktokVariantReconciliationProducts()).data.items || [])
+    selectedKey.value = firstReconciliationAnomalyKey(products.value)
+    if (selectedKey.value) await loadPreview()
+  } catch {
+    notice.value = 'Daftar produk sinkronisasi belum dapat dimuat.'
+    noticeTone.value = 'error'
+  } finally {
+    loading.value = false
+  }
+}
 const loadPreview = async () => { if (!selected.value) return; loading.value = true; notice.value = ''; try { preview.value = (await omnichannelService.tiktokVariantReconciliationPreview({ shopee_item_id: selected.value.shopee_item_id, tiktok_product_id: selected.value.tiktok_product_id })).data } catch (error) { notice.value = error.response?.data?.message || 'Analisis varian gagal dimuat.'; noticeTone.value = 'error' } finally { loading.value = false } }
 onMounted(loadProducts)
 </script>

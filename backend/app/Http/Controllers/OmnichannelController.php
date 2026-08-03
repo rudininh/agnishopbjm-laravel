@@ -66,7 +66,7 @@ class OmnichannelController extends Controller
     public function tiktokVariantReconciliationProducts(): JsonResponse
     {
         return response()->json([
-            'items' => $this->tiktokVariantReconciliationLinkedProducts(),
+            'items' => $this->tiktokVariantReconciliationProductChoices(),
             'revision_source' => 'shopee',
         ]);
     }
@@ -157,13 +157,93 @@ class OmnichannelController extends Controller
 
     protected function tiktokVariantReconciliationLinkedProductChoice(string $shopeeItemId, string $tiktokProductId): ?array
     {
-        foreach ($this->tiktokVariantReconciliationLinkedProducts() as $product) {
+        foreach ($this->tiktokVariantReconciliationProductChoices() as $product) {
             if ($product['shopee_item_id'] === $shopeeItemId && $product['tiktok_product_id'] === $tiktokProductId) {
                 return $product;
             }
         }
 
         return null;
+    }
+
+    protected function tiktokVariantReconciliationProductChoices(): array
+    {
+        $items = [];
+        foreach ([
+            ...$this->tiktokVariantReconciliationLinkedProducts(),
+            ...$this->tiktokVariantReconciliationDetectedAnomalyProducts(),
+        ] as $product) {
+            $shopeeItemId = trim((string) ($product['shopee_item_id'] ?? ''));
+            $tiktokProductId = trim((string) ($product['tiktok_product_id'] ?? ''));
+            if ($shopeeItemId === '' || $tiktokProductId === '') {
+                continue;
+            }
+
+            $key = $shopeeItemId.'|'.$tiktokProductId;
+            $isAnomalyCandidate = (bool) ($product['anomaly_candidate'] ?? false);
+            $detectedVariantCount = max(0, (int) ($product['detected_variant_count'] ?? 0));
+            $productName = trim((string) ($product['product_name'] ?? ''));
+
+            if (! isset($items[$key])) {
+                $items[$key] = [
+                    'shopee_item_id' => $shopeeItemId,
+                    'tiktok_product_id' => $tiktokProductId,
+                    'product_name' => $productName,
+                ];
+            }
+
+            if ($items[$key]['product_name'] === '' && $productName !== '') {
+                $items[$key]['product_name'] = $productName;
+            }
+            if ($isAnomalyCandidate) {
+                $items[$key]['anomaly_candidate'] = true;
+                $items[$key]['detected_variant_count'] = max(
+                    (int) ($items[$key]['detected_variant_count'] ?? 0),
+                    $detectedVariantCount
+                );
+            }
+        }
+
+        $items = array_values($items);
+        usort($items, fn (array $left, array $right): int => [
+            ! (bool) ($left['anomaly_candidate'] ?? false),
+            $left['product_name'],
+            $left['shopee_item_id'],
+            $left['tiktok_product_id'],
+        ] <=> [
+            ! (bool) ($right['anomaly_candidate'] ?? false),
+            $right['product_name'],
+            $right['shopee_item_id'],
+            $right['tiktok_product_id'],
+        ]);
+
+        return $items;
+    }
+
+    protected function tiktokVariantReconciliationDetectedAnomalyProducts(): array
+    {
+        return $this->tiktokVariantReconciliationDetectedAnomalyGroups()
+            ->filter(fn (array $group): bool => collect($group['mapping_only_variants'] ?? [])->isNotEmpty())
+            ->map(fn (array $group): array => [
+                'shopee_item_id' => trim((string) ($group['shopee_item_id'] ?? '')),
+                'tiktok_product_id' => trim((string) ($group['tiktok_product_id'] ?? '')),
+                'product_name' => trim((string) ($group['product_name'] ?? '')),
+                'anomaly_candidate' => true,
+                'detected_variant_count' => collect($group['mapping_only_variants'] ?? [])->count(),
+            ])
+            ->all();
+    }
+
+    protected function tiktokVariantReconciliationDetectedAnomalyGroups(): Collection
+    {
+        if (! Schema::hasTable('stock_master')
+            || ! Schema::hasTable('shopee_product')
+            || ! Schema::hasTable('shopee_product_model')
+            || ! Schema::hasTable('tiktok_products')) {
+            return collect();
+        }
+
+        return $this->tiktokBulkCandidateGroups(true);
     }
 
     protected function refreshTiktokVariantReconciliationShopeeItem(string $shopeeItemId): array
