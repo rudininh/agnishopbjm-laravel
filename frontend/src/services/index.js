@@ -380,6 +380,9 @@ export const omnichannelService = {
     return api.post('/marketplace/import/manual-stock-sync', payload)
   },
 
+  pullStbMarketplaceTokens() {
+    return api.post('/runtime/pull-stb-marketplace-tokens')
+  },
   runTokenAction(action) {
     return api.post(`/omnichannel/${action}`)
   }

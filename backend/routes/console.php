@@ -2,6 +2,7 @@
 
 use App\Http\Controllers\OmnichannelController;
 use App\Services\MarketplaceOrderSyncService;
+use App\Services\MarketplaceTokenSyncService;
 use App\Services\StbMappingSyncService;
 use App\Services\StbSyncWorkerService;
 use App\Services\StockConsistencyService;
@@ -24,6 +25,14 @@ Artisan::command('agnishop:stb-heartbeat', function (): int {
     $this->line('Heartbeat: '.($result['heartbeat_at'] ?? '-'));
 
     return ($result['status'] ?? 'ok') === 'ok' ? 0 : 1;
+});
+
+Artisan::command('agnishop:pull-stb-marketplace-tokens', function (): int {
+    $result = app(MarketplaceTokenSyncService::class)->pullFromStb();
+    $this->info('STB token sync: '.($result['status'] ?? 'error'));
+    $this->line($result['message'] ?? '');
+
+    return in_array(($result['status'] ?? 'error'), ['success', 'unchanged', 'skipped'], true) ? 0 : 1;
 });
 
 Artisan::command('agnishop:sync-orders {--hours= : Lookback order dalam jam}', function (): int {
@@ -314,6 +323,12 @@ if (! $stbMode) {
     Schedule::command('marketplace:refresh-tokens')
         ->everyTenMinutes()
         ->withoutOverlapping();
+
+    if ((bool) config('stb.token_sync_enabled', false) && trim((string) config('stb.token_sync_url', '')) !== '') {
+        Schedule::command('agnishop:pull-stb-marketplace-tokens')
+            ->cron($stbCron((int) config('stb.token_sync_minutes', 5)))
+            ->withoutOverlapping(3);
+    }
 }
 
 Artisan::command('sync:safety-check', function (): int {

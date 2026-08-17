@@ -54,6 +54,13 @@
           <h2>Token Marketplace</h2>
           <p>Kelola auth dan refresh token Shopee/TikTok.</p>
         </div>
+        <button
+          class="primary"
+          :disabled="busyAction === 'stb-token-sync'"
+          @click="pullStbMarketplaceTokens"
+        >
+          {{ busyAction === 'stb-token-sync' ? 'Menarik token...' : 'Tarik Token dari STB' }}
+        </button>
       </div>
 
       <div class="token-accounts">
@@ -109,8 +116,8 @@
                     </span>
                   </td>
                   <td>{{ token.shop_id || '-' }}</td>
-                  <td class="mono">{{ token.access_token || '-' }}</td>
-                  <td class="mono">{{ token.refresh_token || '-' }}</td>
+                  <td>{{ token.access_token_available ? 'Tersedia' : 'Tidak tersedia' }}</td>
+                  <td>{{ token.refresh_token_available ? 'Tersedia' : 'Tidak tersedia' }}</td>
                   <td>{{ token.expire_at || token.expire_in || '-' }}</td>
                   <td class="mono">{{ token.request_id || '-' }}</td>
                   <td>{{ token.created_at || '-' }}</td>
@@ -275,6 +282,21 @@ const runTokenAction = async (action) => {
     await loadData()
   } catch (error) {
     message.value = error.response?.data?.message || 'Aksi gagal diproses.'
+  } finally {
+    busyAction.value = ''
+  }
+}
+
+const pullStbMarketplaceTokens = async () => {
+  busyAction.value = 'stb-token-sync'
+  message.value = ''
+
+  try {
+    const response = await omnichannelService.pullStbMarketplaceTokens()
+    message.value = response.data?.data?.message || 'Sinkron token STB selesai.'
+    await loadData()
+  } catch (error) {
+    message.value = error.response?.data?.message || 'Tarik token dari STB gagal.'
   } finally {
     busyAction.value = ''
   }

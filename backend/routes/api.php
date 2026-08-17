@@ -4,6 +4,7 @@ use App\Http\Controllers\AuthController;
 use App\Http\Controllers\CartController;
 use App\Http\Controllers\CategoryController;
 use App\Http\Controllers\MarketplaceAutoSyncController;
+use App\Http\Controllers\MarketplaceTokenSyncController;
 use App\Http\Controllers\MarketplaceImportController;
 use App\Http\Controllers\MarketplaceWebhookController;
 use App\Http\Controllers\MobileProductController;
@@ -52,6 +53,9 @@ Route::get('shopee/api-test-context', [OmnichannelController::class, 'shopeeApiT
 Route::post('shopee/add-variant', [OmnichannelController::class, 'shopeeAddVariant']);
 Route::post('shopee/delete-variant', [OmnichannelController::class, 'shopeeDeleteVariant']);
 Route::get('runtime/stb-status', [SyncRuntimeController::class, 'stbStatus']);
+Route::get('runtime/marketplace-token-sync', [MarketplaceTokenSyncController::class, 'export']);
+Route::post('runtime/pull-stb-marketplace-tokens', [MarketplaceTokenSyncController::class, 'pull']);
+Route::get('runtime/marketplace-token-sync-status', [MarketplaceTokenSyncController::class, 'status'])->middleware('auth:sanctum');
 Route::post('runtime/stb-mapping-sync', [StbMappingSyncController::class, 'import']);
 Route::get('marketplace/auto-sync', [MarketplaceAutoSyncController::class, 'dashboard']);
 Route::get('marketplace/auto-sync/runtime-status', [SyncRuntimeController::class, 'status']);

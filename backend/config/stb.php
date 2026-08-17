@@ -14,6 +14,11 @@ return [
     'mapping_sync_enabled' => $bool('STB_MAPPING_SYNC_ENABLED', false),
     'mapping_sync_minutes' => $int('STB_MAPPING_SYNC_INTERVAL_MINUTES', 15, 1, 60),
     'mapping_sync_preserve_stock' => $bool('STB_MAPPING_SYNC_PRESERVE_STOCK', true),
+    'token_sync_enabled' => $bool('STB_TOKEN_SYNC_ENABLED', false),
+    'token_sync_url' => rtrim(trim((string) env('STB_TOKEN_SYNC_URL', '')), '/'),
+    'token_sync_token' => trim((string) env('STB_TOKEN_SYNC_TOKEN', '')),
+    'token_sync_minutes' => $int('STB_TOKEN_SYNC_INTERVAL_MINUTES', 5, 1, 60),
+    'token_sync_timeout_seconds' => $int('STB_TOKEN_SYNC_TIMEOUT_SECONDS', 15, 3, 60),
 
     'features' => [
         'auto_browser' => $bool('ENABLE_AUTO_BROWSER', true),

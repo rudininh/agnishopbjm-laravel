@@ -11281,8 +11281,8 @@ class OmnichannelController extends Controller
                 'merchant_id' => $token->merchant_id,
                 'supplier_id' => $token->supplier_id,
                 'user_id' => $token->user_id,
-                'access_token' => $this->maskToken($token->access_token),
-                'refresh_token' => $this->maskToken($token->refresh_token),
+                'access_token_available' => trim((string) $token->access_token) !== '',
+                'refresh_token_available' => trim((string) $token->refresh_token) !== '',
                 'expire_in' => $token->expire_in,
                 'expire_at' => $token->expire_at,
                 'access_token_expire_at' => $token->access_token_expire_at,
@@ -11337,8 +11337,8 @@ class OmnichannelController extends Controller
                     'account_key' => $accountKey,
                     'account_name' => $row['account_name'] ?? 'TikTok AgniShopBJM',
                     'shop_id' => $row['shop_id'] ?? $row['seller_id'] ?? $row['shop_cipher'] ?? null,
-                    'access_token' => $this->maskToken($row['access_token'] ?? null),
-                    'refresh_token' => $this->maskToken($row['refresh_token'] ?? null),
+                    'access_token_available' => trim((string) ($row['access_token'] ?? '')) !== '',
+                    'refresh_token_available' => trim((string) ($row['refresh_token'] ?? '')) !== '',
                     'expire_in' => $row['expire_in'] ?? $row['expires_in'] ?? null,
                     'expire_at' => $row['expire_at'] ?? $row['access_token_expire_at'] ?? null,
                     'request_id' => $row['request_id'] ?? null,
@@ -12422,6 +12422,10 @@ class OmnichannelController extends Controller
     private function ensureShopeeAuthColumns(): void
     {
         if (! Schema::hasTable('shopee_tokens')) {
+            return;
+        }
+
+        if (DB::connection()->getDriverName() === 'sqlite') {
             return;
         }
 
