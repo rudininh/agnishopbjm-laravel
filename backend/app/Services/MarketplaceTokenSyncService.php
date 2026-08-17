@@ -129,7 +129,7 @@ class MarketplaceTokenSyncService
         $query = DB::table($table)->select($selectedColumns);
 
         if (in_array('is_active', $availableColumns, true)) {
-            $query->where('is_active', true);
+            $query->whereRaw('is_active = true');
         }
 
         foreach ($orderBy as $column) {
@@ -164,7 +164,7 @@ class MarketplaceTokenSyncService
             $current = DB::table('shopee_tokens')
                 ->where('account_key', $accountKey)
                 ->where('shop_id', $shopId)
-                ->where('is_active', true)
+                ->whereRaw('is_active = true')
                 ->orderByDesc('updated_at')
                 ->first();
 
@@ -237,7 +237,7 @@ class MarketplaceTokenSyncService
                 continue;
             }
 
-            $current = DB::table('tiktok_tokens')->where('account_key', $accountKey)->where('shop_id', $shopId)->where('is_active', true)->orderByDesc('updated_at')->first();
+            $current = DB::table('tiktok_tokens')->where('account_key', $accountKey)->where('shop_id', $shopId)->whereRaw('is_active = true')->orderByDesc('updated_at')->first();
             if ($current && ! $this->incomingTokenIsNewer($token, $current)) {
                 $summary['skipped_stale'] += 1;
                 continue;
