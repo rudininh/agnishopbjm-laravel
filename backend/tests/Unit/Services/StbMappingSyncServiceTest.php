@@ -26,4 +26,13 @@ class StbMappingSyncServiceTest extends TestCase
         $this->assertSame('false', $stockMaster['is_hidden_from_mapping']->getValue($grammar));
         $this->assertSame('true', $tiktokProduct['is_active']->getValue($grammar));
     }
+    public function test_mapping_table_registry_includes_account_aware_marketplace_listings(): void
+    {
+        $method = new ReflectionMethod(StbMappingSyncService::class, 'tables');
+        $method->setAccessible(true);
+        $tables = $method->invoke(new StbMappingSyncService(), false);
+
+        $this->assertArrayHasKey('marketplace_listings', $tables);
+        $this->assertSame(['stock_master_id', 'account_key'], $tables['marketplace_listings']);
+    }
 }

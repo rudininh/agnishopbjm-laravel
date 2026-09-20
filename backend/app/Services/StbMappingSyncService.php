@@ -14,6 +14,7 @@ class StbMappingSyncService
         'shopee_product_model' => ['model_id', 'item_id'],
         'shopee_product_image' => ['item_id', 'model_id', 'image_url'],
         'tiktok_products' => ['product_id', 'sku_id'],
+        'marketplace_listings' => ['stock_master_id', 'account_key'],
     ];
 
     private const TOKEN_TABLES = [
@@ -33,6 +34,7 @@ class StbMappingSyncService
         'stock_master' => ['is_hidden_from_mapping'],
         'shopee_product' => ['is_active'],
         'tiktok_products' => ['is_active'],
+        'marketplace_listings' => ['is_active'],
         'shopee_tokens' => ['is_active'],
         'tiktok_tokens' => ['is_active'],
     ];
