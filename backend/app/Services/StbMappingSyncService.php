@@ -192,6 +192,11 @@ class StbMappingSyncService
             }
 
             $exists = $this->rowExists($table, $condition);
+            if ($table === 'stock_master' && ! $dryRun) {
+                $this->reconcileStockMasterSkuConflict($data);
+                $condition = $this->conditionForRow($table, $data);
+                $exists = $this->rowExists($table, $condition);
+            }
             if ($dryRun) {
                 $exists ? $updated++ : $inserted++;
                 continue;
@@ -224,6 +229,39 @@ class StbMappingSyncService
         ];
     }
 
+
+    private function reconcileStockMasterSkuConflict(array $data): void
+    {
+        $incomingId = (int) ($data['id'] ?? 0);
+        $incomingSku = trim((string) ($data['internal_sku'] ?? ''));
+        if ($incomingId <= 0 || $incomingSku === '') {
+            return;
+        }
+
+        $current = DB::table('stock_master')->where('id', $incomingId)->first();
+        $owner = DB::table('stock_master')
+            ->where('internal_sku', $incomingSku)
+            ->where('id', '!=', $incomingId)
+            ->first();
+        if (! $current || ! $owner) {
+            return;
+        }
+
+        foreach (['sku_mappings', 'marketplace_listings'] as $table) {
+            if (! Schema::hasTable($table) || ! Schema::hasColumn($table, 'stock_master_id')) {
+                continue;
+            }
+
+            DB::table($table)->where('stock_master_id', $incomingId)->delete();
+            $updates = ['stock_master_id' => $incomingId];
+            if (Schema::hasColumn($table, 'updated_at')) {
+                $updates['updated_at'] = now();
+            }
+            DB::table($table)->where('stock_master_id', $owner->id)->update($updates);
+        }
+
+        DB::table('stock_master')->where('id', $owner->id)->delete();
+    }
     private function conditionForRow(string $table, array $data): array
     {
         if ($table === 'stock_master') {
