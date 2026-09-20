@@ -1281,8 +1281,8 @@ class MarketplaceSyncService
         $targetAccountKey = trim($targetAccountKey);
         if (in_array($targetAccountKey, ['shopee-agnishopbjm', 'shopee-gitacollectionbjm'], true)) {
             $prefix = $targetAccountKey === 'shopee-gitacollectionbjm' ? 'shopee_gita_' : 'shopee_';
-            $itemId = trim((string) ($mapping->{$prefix.'product_id'} ?? $mapping->shopee_product_id ?? ''));
-            $modelId = trim((string) ($mapping->{$prefix.'sku'} ?? $mapping->{$prefix.'model_id'} ?? $mapping->shopee_sku ?? ''));
+            $itemId = trim((string) ($mapping->{$prefix.'product_id'} ?? ''));
+            $modelId = trim((string) ($mapping->{$prefix.'sku'} ?? $mapping->{$prefix.'model_id'} ?? ''));
             if ($itemId === '' || $modelId === '') {
                 return ['status' => 'skipped', 'message' => 'Push Shopee dibatalkan: item/model target belum lengkap.'];
             }

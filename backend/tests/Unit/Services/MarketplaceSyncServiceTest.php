@@ -138,6 +138,47 @@ class MarketplaceSyncServiceTest extends TestCase
         });
     }
 
+    public function test_gita_push_does_not_fallback_to_primary_shopee_mapping(): void
+    {
+        $apiService = Mockery::mock(MarketplaceApiService::class);
+        $apiService->shouldNotReceive('updateShopeeModelStockForAccount');
+
+        $service = new MarketplaceSyncService(
+            $apiService,
+            Mockery::mock(MarketplaceFailureNotifier::class),
+        );
+
+        $result = $service->pushTargetStockForAccount((object) [
+            'shopee_product_id' => '53016356558',
+            'shopee_sku' => '302891262876',
+        ], 'shopee-gitacollectionbjm', 3, true);
+
+        $this->assertSame('skipped', $result['status']);
+        $this->assertSame('Push Shopee dibatalkan: item/model target belum lengkap.', $result['message']);
+    }
+
+    public function test_primary_shopee_push_keeps_legacy_mapping_fallback(): void
+    {
+        $apiService = Mockery::mock(MarketplaceApiService::class);
+        $apiService
+            ->shouldReceive('updateShopeeModelStockForAccount')
+            ->once()
+            ->with('shopee-agnishopbjm', '53016356558', '302891262876', 3, null)
+            ->andReturn(['status' => 'success', 'message' => 'ok']);
+
+        $service = new MarketplaceSyncService(
+            $apiService,
+            Mockery::mock(MarketplaceFailureNotifier::class),
+        );
+
+        $result = $service->pushTargetStockForAccount((object) [
+            'shopee_product_id' => '53016356558',
+            'shopee_sku' => '302891262876',
+        ], 'shopee-agnishopbjm', 3, true);
+
+        $this->assertSame('success', $result['status']);
+    }
+
     public function test_tiktok_push_uses_cached_sku_warehouse_when_default_configuration_is_empty(): void
     {
         config([
