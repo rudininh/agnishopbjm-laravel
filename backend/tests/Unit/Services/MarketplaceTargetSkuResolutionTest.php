@@ -24,7 +24,7 @@ class MarketplaceTargetSkuResolutionTest extends TestCase
             $table->string('product_id');
             $table->string('sku_id');
             $table->string('seller_sku');
-            $table->string('variant_name');
+            $table->string('sku_name');
             $table->boolean('is_active')->default(true);
         });
         Schema::dropIfExists('shopee_product_model');
@@ -44,7 +44,7 @@ class MarketplaceTargetSkuResolutionTest extends TestCase
 
     public function test_missing_tiktok_ids_resolve_from_unique_exact_active_sku(): void
     {
-        DB::table('tiktok_products')->insert(['product_id' => '100', 'sku_id' => '200', 'seller_sku' => 'SKU-GREEN', 'variant_name' => 'Green']);
+        DB::table('tiktok_products')->insert(['product_id' => '100', 'sku_id' => '200', 'seller_sku' => 'SKU-GREEN', 'sku_name' => 'Green']);
         $api = Mockery::mock(MarketplaceApiService::class);
         $api->shouldReceive('updateTiktokStockForAccount')->once()
             ->with('tiktok-agnishopbjm', '100', '200', 7, null, 'delivery-key')
@@ -56,21 +56,21 @@ class MarketplaceTargetSkuResolutionTest extends TestCase
     public function test_duplicate_sku_is_not_disambiguated_by_variant_name(): void
     {
         DB::table('tiktok_products')->insert([
-            ['product_id' => '100', 'sku_id' => '200', 'seller_sku' => 'SKU-GREEN', 'variant_name' => 'Green'],
-            ['product_id' => '101', 'sku_id' => '201', 'seller_sku' => 'SKU-GREEN', 'variant_name' => 'Green'],
+            ['product_id' => '100', 'sku_id' => '200', 'seller_sku' => 'SKU-GREEN', 'sku_name' => 'Green'],
+            ['product_id' => '101', 'sku_id' => '201', 'seller_sku' => 'SKU-GREEN', 'sku_name' => 'Green'],
         ]);
         $this->assertBlockedTiktok();
     }
 
     public function test_same_sku_with_different_variant_is_blocked(): void
     {
-        DB::table('tiktok_products')->insert(['product_id' => '100', 'sku_id' => '200', 'seller_sku' => 'SKU-GREEN', 'variant_name' => 'Blue']);
+        DB::table('tiktok_products')->insert(['product_id' => '100', 'sku_id' => '200', 'seller_sku' => 'SKU-GREEN', 'sku_name' => 'Blue']);
         $this->assertBlockedTiktok();
     }
 
     public function test_inactive_sku_is_blocked(): void
     {
-        DB::table('tiktok_products')->insert(['product_id' => '100', 'sku_id' => '200', 'seller_sku' => 'SKU-GREEN', 'variant_name' => 'Green', 'is_active' => false]);
+        DB::table('tiktok_products')->insert(['product_id' => '100', 'sku_id' => '200', 'seller_sku' => 'SKU-GREEN', 'sku_name' => 'Green', 'is_active' => false]);
         $this->assertBlockedTiktok();
     }
 

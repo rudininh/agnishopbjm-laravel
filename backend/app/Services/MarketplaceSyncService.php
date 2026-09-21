@@ -1313,8 +1313,11 @@ class MarketplaceSyncService
 
         $variant = $this->normalizeMappingText($mapping->variant_name ?? '');
         if ($targetAccountKey === 'tiktok-agnishopbjm' && (! trim((string) ($mapping->tiktok_product_id ?? '')) || ! trim((string) ($mapping->tiktok_sku ?? '')))) {
-            $rows = DB::table('tiktok_products')->where('seller_sku', $sku)->whereRaw('COALESCE(is_active, true) = true')->get(['product_id', 'sku_id', 'variant_name']);
-            $rows = $rows->filter(fn (object $row): bool => $variant === '' || $this->normalizeMappingText($row->variant_name ?? '') === $variant);
+            $rows = DB::table('tiktok_products')
+                ->where('seller_sku', $sku)
+                ->whereRaw('COALESCE(is_active, true) = true')
+                ->get(['product_id', 'sku_id', 'sku_name']);
+            $rows = $rows->filter(fn (object $row): bool => $variant === '' || $this->normalizeMappingText($row->sku_name ?? '') === $variant);
             if ($rows->count() === 1) {
                 $mapping->tiktok_product_id = (string) $rows->first()->product_id;
                 $mapping->tiktok_sku = (string) $rows->first()->sku_id;
