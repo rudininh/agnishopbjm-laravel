@@ -1279,6 +1279,7 @@ class MarketplaceSyncService
         }
 
         $targetAccountKey = trim($targetAccountKey);
+        $this->resolveMissingTargetIds($mapping, $targetAccountKey);
         if (in_array($targetAccountKey, ['shopee-agnishopbjm', 'shopee-gitacollectionbjm'], true)) {
             $prefix = $targetAccountKey === 'shopee-gitacollectionbjm' ? 'shopee_gita_' : 'shopee_';
             $itemId = trim((string) ($mapping->{$prefix.'product_id'} ?? ''));
@@ -1301,6 +1302,51 @@ class MarketplaceSyncService
         }
 
         return ['status' => 'error', 'message' => 'Akun target marketplace tidak didukung.'];
+    }
+
+    private function resolveMissingTargetIds(object $mapping, string $targetAccountKey): void
+    {
+        $sku = trim((string) ($mapping->internal_sku ?? $mapping->mapped_seller_sku ?? $mapping->shopee_seller_sku ?? $mapping->tiktok_seller_sku ?? ''));
+        if ($sku === '') {
+            return;
+        }
+
+        $variant = $this->normalizeMappingText($mapping->variant_name ?? '');
+        if ($targetAccountKey === 'tiktok-agnishopbjm' && (! trim((string) ($mapping->tiktok_product_id ?? '')) || ! trim((string) ($mapping->tiktok_sku ?? '')))) {
+            $rows = DB::table('tiktok_products')->where('seller_sku', $sku)->whereRaw('COALESCE(is_active, true) = true')->get(['product_id', 'sku_id', 'variant_name']);
+            $rows = $rows->filter(fn (object $row): bool => $variant === '' || $this->normalizeMappingText($row->variant_name ?? '') === $variant);
+            if ($rows->count() === 1) {
+                $mapping->tiktok_product_id = (string) $rows->first()->product_id;
+                $mapping->tiktok_sku = (string) $rows->first()->sku_id;
+            }
+        }
+
+        if (in_array($targetAccountKey, ['shopee-agnishopbjm', 'shopee-gitacollectionbjm'], true)) {
+            $prefix = $targetAccountKey === 'shopee-gitacollectionbjm' ? 'shopee_gita_' : 'shopee_';
+            if (trim((string) ($mapping->{$prefix.'product_id'} ?? '')) && trim((string) ($mapping->{$prefix.'sku'} ?? ''))) {
+                return;
+            }
+            $shopId = DB::table('shopee_tokens')->where('account_key', $targetAccountKey)->whereRaw('COALESCE(is_active, true) = true')->value('shop_id');
+            if (! $shopId) {
+                return;
+            }
+            $rows = DB::table('shopee_product_model as spm')
+                ->join('shopee_product as sp', 'sp.item_id', '=', 'spm.item_id')
+                ->where('sp.shop_id', $shopId)
+                ->where('spm.model_sku', $sku)
+                ->whereRaw('COALESCE(sp.is_active, true) = true')
+                ->get(['sp.item_id', 'spm.model_id', 'spm.name']);
+            $rows = $rows->filter(fn (object $row): bool => $variant === '' || $this->normalizeMappingText($row->name ?? '') === $variant);
+            if ($rows->count() === 1) {
+                $mapping->{$prefix.'product_id'} = (string) $rows->first()->item_id;
+                $mapping->{$prefix.'sku'} = (string) $rows->first()->model_id;
+            }
+        }
+    }
+
+    private function normalizeMappingText(mixed $value): string
+    {
+        return preg_replace('/[^a-z0-9]+/i', ' ', trim((string) $value)) ?: '';
     }
 
     public function pushTargetStock(object $mapping, string $targetMarketplace, int $stock, bool $forceLive = false): array
