@@ -1317,7 +1317,12 @@ class MarketplaceSyncService
                 ->where('seller_sku', $sku)
                 ->whereRaw('COALESCE(is_active, true) = true')
                 ->get(['product_id', 'sku_id', 'sku_name']);
-            $rows = $rows->filter(fn (object $row): bool => $variant === '' || $this->normalizeMappingText($row->sku_name ?? '') === $variant);
+            if ($rows->count() > 1 && $variant !== '') {
+                $variantRows = $rows->filter(
+                    fn (object $row): bool => $this->normalizeMappingText($row->sku_name ?? '') === $variant
+                );
+                $rows = $variantRows;
+            }
             if ($rows->count() === 1) {
                 $mapping->tiktok_product_id = (string) $rows->first()->product_id;
                 $mapping->tiktok_sku = (string) $rows->first()->sku_id;
@@ -1339,7 +1344,12 @@ class MarketplaceSyncService
                 ->where('spm.model_sku', $sku)
                 ->whereRaw('COALESCE(sp.is_active, true) = true')
                 ->get(['sp.item_id', 'spm.model_id', 'spm.name']);
-            $rows = $rows->filter(fn (object $row): bool => $variant === '' || $this->normalizeMappingText($row->name ?? '') === $variant);
+            if ($rows->count() > 1 && $variant !== '') {
+                $variantRows = $rows->filter(
+                    fn (object $row): bool => $this->normalizeMappingText($row->name ?? '') === $variant
+                );
+                $rows = $variantRows;
+            }
             if ($rows->count() === 1) {
                 $mapping->{$prefix.'product_id'} = (string) $rows->first()->item_id;
                 $mapping->{$prefix.'sku'} = (string) $rows->first()->model_id;
