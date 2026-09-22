@@ -69,7 +69,7 @@ class MarketplaceApiService
         }
 
         $marketplaceOk = $httpResponse->successful() && (int) ($response['code'] ?? -1) === 0;
-        $product = data_get($response, 'data.product');
+        $product = data_get($response, 'data');
         $productIsValid = is_array($product) && $product !== [] && ! array_is_list($product);
         $ok = $marketplaceOk && $productIsValid;
 
@@ -568,7 +568,7 @@ class MarketplaceApiService
         $shop = $this->tiktokShopForAccount($accountKey);
         $warehouseId = trim((string) ($warehouseId ?: $context['warehouse_id'] ?? ''));
         $shopCipher = trim((string) ($shop->cipher ?? $shop->shop_cipher ?? ''));
-        if (! $token || trim((string) ($token->access_token ?? '')) === '' || ! $shop || trim((string) ($shop->shop_id ?? '')) === '' || $shopCipher === '' || $warehouseId === '') {
+        if (! $token || trim((string) ($token->access_token ?? '')) === '' || ! $shop || trim((string) ($shop->shop_id ?? $shop->id ?? '')) === '' || $shopCipher === '' || $warehouseId === '') {
             return ['status' => 'error', 'message' => 'Token, identitas toko, cipher, atau warehouse TikTok belum tersedia.'];
         }
 
