@@ -185,6 +185,10 @@ class ShopeeSkuTiktokVariantCleanupApiTest extends TestCase
         Http::fake();
         $lock = Mockery::mock(Lock::class);
         $lock->shouldReceive('block')->once()->andThrow(new LockTimeoutException());
+        $catalogLock = Mockery::mock(Lock::class);
+        $catalogLock->shouldReceive('get')->once()->andReturn(true);
+        $catalogLock->shouldReceive('release')->once();
+        Cache::shouldReceive('lock')->once()->with('stock-catalog-mutation', 900)->andReturn($catalogLock);
         Cache::shouldReceive('lock')->once()->with('shopee-sku-tiktok-cleanup', 900)->andReturn($lock);
 
         $this->postJson('/api/tiktok/bulk-missing-variants/sku-cleanup/00000000-0000-4000-8000-000000000001/submit', [

@@ -15,6 +15,35 @@ use Tests\TestCase;
 
 class OmnichannelControllerTest extends TestCase
 {
+    public function test_shopee_display_template_uses_current_variant_name_instead_of_existing_sku(): void
+    {
+        $template = $this->invokeControllerMethod('shopeeModelVariationCode', ['54256579274', (object) [
+            'name' => 'Americano', 'model_sku' => 'INT-54256579274-PUTIH',
+        ]]);
+        $this->assertSame('INT-54256579274-AMERICANO', $template);
+    }
+
+    public function test_shopee_sku_repair_derives_target_and_rejects_stale_preview(): void
+    {
+        $model = (object) ['model_id' => '1', 'name' => 'Americano', 'model_sku' => 'INT-42-PUTIH'];
+        $expected = ['expected_name' => 'Americano', 'expected_sku' => 'INT-42-PUTIH'];
+        $this->assertSame('INT-42-AMERICANO', $this->invokeControllerMethod('shopeeSkuRepairTarget', ['42', $model, collect([$model]), $expected]));
+        $model->name = 'Terong';
+        $this->expectException(\Symfony\Component\HttpKernel\Exception\HttpException::class);
+        $this->expectExceptionMessage('Data varian berubah');
+        $this->invokeControllerMethod('shopeeSkuRepairTarget', ['42', $model, collect([$model]), $expected]);
+    }
+
+    public function test_shopee_sku_repair_blocks_normalized_duplicate_names(): void
+    {
+        $model = (object) ['model_id' => '1', 'name' => 'Soft Pink', 'model_sku' => 'OLD'];
+        $this->expectException(\Symfony\Component\HttpKernel\Exception\HttpException::class);
+        $this->expectExceptionMessage('SKU template duplikat');
+        $this->invokeControllerMethod('shopeeSkuRepairTarget', ['42', $model, collect([
+            $model, (object) ['model_id' => '2', 'name' => 'Soft-Pink'],
+        ]), ['expected_name' => 'Soft Pink', 'expected_sku' => 'OLD']]);
+    }
+
     public function test_scheduled_shopee_cache_token_selection_is_primary_account_only(): void
     {
         $this->createShopeeTokensTable();
@@ -46,6 +75,73 @@ class OmnichannelControllerTest extends TestCase
             $tokens = $this->invokeControllerMethod('activeShopeeTokensForSync', []);
 
             $this->assertSame(['shopee-agnishopbjm'], $tokens->pluck('account_key')->all());
+        } finally {
+            Schema::dropIfExists('shopee_tokens');
+        }
+    }
+
+    public function test_source_token_resolver_selects_exact_product_shop(): void
+    {
+        $this->createShopeeTokensTable();
+
+        try {
+            DB::table('shopee_tokens')->insert([
+                [
+                    'account_key' => 'shopee-agnishopbjm',
+                    'account_name' => 'Shopee AgniShopBJM',
+                    'shop_id' => 1122,
+                    'access_token' => 'primary-access-token',
+                    'access_token_expire_at' => now()->addHours(2),
+                    'is_active' => true,
+                    'created_at' => now(),
+                    'updated_at' => now(),
+                ],
+                [
+                    'account_key' => 'shopee-gitacollectionbjm',
+                    'account_name' => 'Shopee GitaCollectionBJM',
+                    'shop_id' => 9988,
+                    'access_token' => 'source-access-token',
+                    'access_token_expire_at' => now()->addHours(2),
+                    'is_active' => true,
+                    'created_at' => now(),
+                    'updated_at' => now(),
+                ],
+            ]);
+
+            $this->assertTrue($this->hasControllerMethod('resolveShopeeSourceTokenForProduct'));
+            $result = $this->invokeControllerMethod('resolveShopeeSourceTokenForProduct', [9988]);
+
+            $this->assertSame(9988, (int) $result['required_shop_id']);
+            $this->assertSame('shopee-gitacollectionbjm', $result['token']->account_key);
+            $this->assertSame(9988, (int) $result['token']->shop_id);
+        } finally {
+            Schema::dropIfExists('shopee_tokens');
+        }
+    }
+
+    public function test_source_token_resolver_returns_safe_missing_token_context(): void
+    {
+        $this->createShopeeTokensTable();
+
+        try {
+            DB::table('shopee_tokens')->insert([
+                'account_key' => 'shopee-agnishopbjm',
+                'account_name' => 'Shopee AgniShopBJM',
+                'shop_id' => 1122,
+                'access_token' => 'primary-access-token',
+                'access_token_expire_at' => now()->addHours(2),
+                'is_active' => true,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+
+            $this->assertTrue($this->hasControllerMethod('resolveShopeeSourceTokenForProduct'));
+            $result = $this->invokeControllerMethod('resolveShopeeSourceTokenForProduct', [9988]);
+
+            $this->assertNull($result['token']);
+            $this->assertSame(9988, (int) $result['required_shop_id']);
+            $this->assertSame(['shopee-agnishopbjm'], $result['candidate_account_keys']);
+            $this->assertStringNotContainsString('primary-access-token', json_encode($result));
         } finally {
             Schema::dropIfExists('shopee_tokens');
         }
@@ -1413,6 +1509,53 @@ class OmnichannelControllerTest extends TestCase
                 ],
             ],
         ]);
+    }
+
+    public function test_tiktok_existing_product_partial_edit_batch_mutation_rejects_duplicate_sales_attribute_values(): void
+    {
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('Nilai atribut varian TikTok sudah ada atau duplikat dalam batch.');
+
+        $this->invokeControllerMethod('buildTiktokExistingProductPartialEditBatchMutation', [
+            ['product_id' => 'product-1'],
+            ['id' => 'product-1', 'skus' => [$this->tiktokPartialEditFixtureSku()]],
+            [
+                [
+                    'seller_sku' => 'NEW-TERONG-ONE',
+                    'variant_name' => 'Terong',
+                    'stock_qty' => 2,
+                    'price' => 48000,
+                    'uploaded_image_uri' => 'tos-alisg-i-aphluv4xwc-sg/terong-one',
+                ],
+                [
+                    'seller_sku' => 'NEW-TERONG-TWO',
+                    'variant_name' => 'Terong',
+                    'stock_qty' => 3,
+                    'price' => 48000,
+                    'uploaded_image_uri' => 'tos-alisg-i-aphluv4xwc-sg/terong-two',
+                ],
+            ],
+        ]);
+    }
+
+    public function test_bulk_tiktok_sales_attribute_preflight_blocks_ambiguous_duplicate_values(): void
+    {
+        $this->assertTrue($this->hasControllerMethod('partitionBulkTiktokVariantsBySalesAttributeValue'));
+
+        $partition = $this->invokeControllerMethod('partitionBulkTiktokVariantsBySalesAttributeValue', [
+            [
+                $this->tiktokPartialEditFixtureSku(),
+            ],
+            [
+                ['seller_sku' => 'NEW-TERONG-ONE', 'variant_name' => 'Terong'],
+                ['seller_sku' => 'NEW-TERONG-TWO', 'variant_name' => 'Terong'],
+                ['seller_sku' => 'NEW-BIRU', 'variant_name' => 'Biru'],
+            ],
+        ]);
+
+        $this->assertSame(['NEW-BIRU'], array_column($partition['processable'], 'seller_sku'));
+        $this->assertSame(['NEW-TERONG-ONE', 'NEW-TERONG-TWO'], array_column($partition['blocked'], 'seller_sku'));
+        $this->assertSame('Nama varian Shopee duplikat dalam batch; perlu verifikasi manual.', $partition['blocked'][0]['reason']);
     }
 
     public function test_bulk_tiktok_batch_submission_sends_one_payload_and_verifies_all_prepared_skus(): void

@@ -70,6 +70,9 @@ class MarketplaceApiService
 
         $marketplaceOk = $httpResponse->successful() && (int) ($response['code'] ?? -1) === 0;
         $product = data_get($response, 'data');
+        if (is_array($product) && array_key_exists('product', $product)) {
+            $product = $product['product'];
+        }
         $productIsValid = is_array($product) && $product !== [] && ! array_is_list($product);
         $ok = $marketplaceOk && $productIsValid;
 

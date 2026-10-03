@@ -1317,13 +1317,8 @@ class MarketplaceSyncService
                 ->where('seller_sku', $sku)
                 ->whereRaw('COALESCE(is_active, true) = true')
                 ->get(['product_id', 'sku_id', 'sku_name']);
-            if ($rows->count() > 1 && $variant !== '') {
-                $variantRows = $rows->filter(
-                    fn (object $row): bool => $this->normalizeMappingText($row->sku_name ?? '') === $variant
-                );
-                $rows = $variantRows;
-            }
-            if ($rows->count() === 1) {
+            if ($rows->count() === 1 && ($variant === ''
+                || $this->normalizeMappingText($rows->first()->sku_name ?? '') === $variant)) {
                 $mapping->tiktok_product_id = (string) $rows->first()->product_id;
                 $mapping->tiktok_sku = (string) $rows->first()->sku_id;
             }

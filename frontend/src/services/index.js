@@ -109,6 +109,21 @@ export const posService = {
 }
 
 export const omnichannelService = {
+  orphanVariantPreview(accountKey) {
+    return api.post('/marketplace/orphan-variants/preview', { account_key: accountKey }, { timeout: 180000 })
+  },
+  orphanVariantScan(runId, accountKey) {
+    return api.post(`/marketplace/orphan-variants/${runId}/scan`, { account_key: accountKey }, { timeout: 180000 })
+  },
+  orphanVariantRun(runId, accountKey) {
+    return api.get(`/marketplace/orphan-variants/${runId}`, { params: { account_key: accountKey } })
+  },
+  orphanVariantSubmit(runId, accountKey, revision, itemIds) {
+    return api.post(`/marketplace/orphan-variants/${runId}/submit`, { account_key: accountKey, revision, item_ids: itemIds, confirm_delete: true })
+  },
+  orphanVariantStep(runId, accountKey) {
+    return api.post(`/marketplace/orphan-variants/${runId}/step`, { account_key: accountKey }, { timeout: 300000 })
+  },
   dashboard() {
     return api.get('/omnichannel/dashboard')
   },

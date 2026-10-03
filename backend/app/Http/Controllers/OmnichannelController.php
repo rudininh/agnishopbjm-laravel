@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Services\MarketplaceAccountRegistry;
 use App\Services\TiktokPartialEditSkuPayloadBuilder;
 use App\Services\ShopeeSellerSkuTemplate;
+use App\Services\TiktokSkuRepairPlan;
 use App\Services\ShopeeSkuTiktokVariantCleanupService;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
@@ -3016,6 +3017,78 @@ class OmnichannelController extends Controller
             ->values();
     }
 
+    /**
+     * Resolve the Shopee token from the source product's shop, not the request context.
+     *
+     * @return array{token: ?object, account: ?array, context: array<string, mixed>}
+     */
+    private function resolveShopeeSourceTokenForProduct(int $shopId): array
+    {
+        $accounts = $this->marketplaceAccounts();
+        $candidates = DB::table('shopee_tokens')
+            ->whereRaw('is_active = true')
+            ->whereNotNull('shop_id')
+            ->whereNotNull('access_token')
+            ->orderBy('account_name')
+            ->get()
+            ->filter(fn ($token): bool => isset($accounts[(string) ($token->account_key ?? '')])
+                && ($accounts[(string) ($token->account_key ?? '')]['channel'] ?? null) === 'shopee')
+            ->values();
+
+        $matching = $candidates
+            ->filter(fn ($token): bool => (int) ($token->shop_id ?? 0) === $shopId)
+            ->values();
+
+        foreach ($matching as $candidate) {
+            if (! $this->shopeeAccessTokenNeedsRefresh($candidate)) {
+                continue;
+            }
+
+            $this->refreshShopeeToken($accounts[(string) $candidate->account_key]);
+        }
+
+        if ($matching->contains(fn ($candidate): bool => $this->shopeeAccessTokenNeedsRefresh($candidate))) {
+            $candidates = DB::table('shopee_tokens')
+                ->whereRaw('is_active = true')
+                ->whereNotNull('shop_id')
+                ->whereNotNull('access_token')
+                ->orderBy('account_name')
+                ->get()
+                ->filter(fn ($token): bool => isset($accounts[(string) ($token->account_key ?? '')])
+                    && ($accounts[(string) ($token->account_key ?? '')]['channel'] ?? null) === 'shopee')
+                ->values();
+            $matching = $candidates
+                ->filter(fn ($token): bool => (int) ($token->shop_id ?? 0) === $shopId)
+                ->values();
+        }
+
+        $token = $matching
+            ->reject(fn ($candidate): bool => $this->shopeeAccessTokenIsExpired($candidate))
+            ->first();
+        $accountKey = trim((string) ($token->account_key ?? ''));
+
+        $context = [
+            'required_shop_id' => $shopId,
+            'candidate_account_keys' => $candidates
+                ->pluck('account_key')
+                ->map(fn (mixed $key): string => trim((string) $key))
+                ->filter()
+                ->unique()
+                ->values()
+                ->all(),
+            'candidate_count' => $candidates->count(),
+            'matching_candidate_count' => $matching->count(),
+            'selected_account_key' => $accountKey !== '' ? $accountKey : null,
+        ];
+
+        return [
+            'token' => $token,
+            'account' => $accountKey !== '' ? $accounts[$accountKey] : null,
+            ...$context,
+            'context' => $context,
+        ];
+    }
+
     private function fetchShopeeItemIds(array $config, int $shopId, string $accessToken): array
     {
         $ids = [];
@@ -3279,12 +3352,24 @@ class OmnichannelController extends Controller
 
     private function shopeeModelVariationCode(string $itemId, object $model): string
     {
-        $modelSku = trim((string) ($model->model_sku ?? ''));
-        if (str_starts_with(strtoupper($modelSku), 'INT-')) {
-            return $modelSku;
+        return $this->buildShopeeTemplateSellerSku($itemId, (string) ($model->name ?? 'VARIAN'));
+    }
+
+    private function shopeeSkuRepairTarget(string $itemId, object $model, Collection $siblings, array $expected): string
+    {
+        abort_if((string) $model->model_sku !== (string) ($expected['expected_sku'] ?? '')
+            || (string) $model->name !== (string) ($expected['expected_name'] ?? ''), 409, 'Data varian berubah. Sync dan buka ulang preview.');
+        abort_if(trim((string) $model->name) === '', 422, 'Nama varian kosong. Periksa varian dahulu.');
+        $target = $this->buildShopeeTemplateSellerSku($itemId, (string) $model->name);
+        foreach ($siblings as $sibling) {
+            if ((string) $sibling->model_id === (string) $model->model_id) {
+                continue;
+            }
+            abort_if($this->buildShopeeTemplateSellerSku($itemId, (string) $sibling->name) === $target,
+                422, 'Nama varian menghasilkan SKU template duplikat. Periksa nama varian terlebih dahulu.');
         }
 
-        return $this->buildShopeeTemplateSellerSku($itemId, (string) ($model->name ?? 'VARIAN'));
+        return $target;
     }
 
     private function shopeeMissingSkuBulkCandidates(Collection $models): Collection
@@ -4182,8 +4267,8 @@ class OmnichannelController extends Controller
         }
 
         $shopId = (int) ($product->shop_id ?? 0);
-        $token = $this->activeShopeeTokensForSync()
-            ->first(fn ($candidate) => (int) ($candidate->shop_id ?? 0) === $shopId);
+        $sourceToken = $this->resolveShopeeSourceTokenForProduct($shopId);
+        $token = $sourceToken['token'];
 
         if (! $token) {
             return [
@@ -4193,11 +4278,12 @@ class OmnichannelController extends Controller
                 'variants' => 0,
                 'mode' => 'product',
                 'item_id' => (string) $itemId,
+                'source_token_context' => $sourceToken['context'],
             ];
         }
 
         try {
-            $config = $this->shopeeConfig();
+            $config = $this->shopeeConfig($sourceToken['account']);
             $baseItems = $this->fetchShopeeBaseInfo($config, $shopId, (string) $token->access_token, [$itemId]);
 
             if ($baseItems === []) {
@@ -4898,6 +4984,8 @@ class OmnichannelController extends Controller
             ],
             'items' => $rows->map(function ($group, string $productId) {
                 $first = $group->first();
+                $repairPlan = collect(app(TiktokSkuRepairPlan::class)->build($productId,
+                    $group->map(fn ($sku): array => (array) $sku)->all()))->keyBy('sku_id');
 
                 return [
                 'product_id' => $productId,
@@ -4908,7 +4996,8 @@ class OmnichannelController extends Controller
                         'sku_id' => $sku->sku_id ?? null,
                         'sku_name' => $sku->sku_name,
                         'seller_sku' => $sku->seller_sku ?? null,
-                        'kode_variasi' => $this->tiktokSkuVariationCode((string) $productId, $sku),
+                        'kode_variasi' => $repairPlan->get((string) $sku->sku_id)['target'] ?? '',
+                        'sku_repair_blocked' => $repairPlan->get((string) $sku->sku_id)['blocked'] ?? 'SKU tidak ditemukan.',
                         'stock_qty' => (int) ($sku->stock_qty ?? 0),
                         'price' => (int) ($sku->price ?? 0),
                         'subtotal' => (int) ($sku->subtotal ?? 0),
@@ -5589,6 +5678,15 @@ class OmnichannelController extends Controller
             ->filter()
             ->flip()
             ->all();
+        $knownSalesAttributeValues = [];
+        foreach ($existingSkus as $sku) {
+            foreach ((array) data_get($sku, 'sales_attributes', data_get($sku, 'sale_attributes', [])) as $attribute) {
+                $valueKey = $this->tiktokSalesAttributeValueKey((string) data_get($attribute, 'value_name', ''));
+                if ($valueKey !== '') {
+                    $knownSalesAttributeValues[$valueKey] = true;
+                }
+            }
+        }
 
         foreach ($additions as $addition) {
             $sellerSku = trim((string) data_get($addition, 'seller_sku', ''));
@@ -5605,6 +5703,12 @@ class OmnichannelController extends Controller
                 throw new \RuntimeException('SKU penjual TikTok sudah ada atau duplikat dalam batch.');
             }
             $knownSellerSkus[$sellerSkuKey] = true;
+
+            $salesAttributeValueKey = $this->tiktokSalesAttributeValueKey($variantName);
+            if ($salesAttributeValueKey === '' || isset($knownSalesAttributeValues[$salesAttributeValueKey])) {
+                throw new \RuntimeException('Nilai atribut varian TikTok sudah ada atau duplikat dalam batch.');
+            }
+            $knownSalesAttributeValues[$salesAttributeValueKey] = true;
 
             $newSalesAttribute = $template['sales_attribute'];
             unset($newSalesAttribute['value_id']);
@@ -5631,6 +5735,51 @@ class OmnichannelController extends Controller
                 'skus' => $rows,
             ],
         ];
+    }
+
+    private function tiktokSalesAttributeValueKey(string $value): string
+    {
+        return mb_strtolower(preg_replace('/\s+/', ' ', trim($value)) ?? '', 'UTF-8');
+    }
+
+    private function partitionBulkTiktokVariantsBySalesAttributeValue(array $existingSkus, array $variants): array
+    {
+        $existingValues = [];
+        foreach ($existingSkus as $sku) {
+            foreach ((array) data_get($sku, 'sales_attributes', data_get($sku, 'sale_attributes', [])) as $attribute) {
+                $valueKey = $this->tiktokSalesAttributeValueKey((string) data_get($attribute, 'value_name', ''));
+                if ($valueKey !== '') {
+                    $existingValues[$valueKey] = true;
+                }
+            }
+        }
+
+        $variantsByValue = [];
+        foreach ($variants as $variant) {
+            $valueKey = $this->tiktokSalesAttributeValueKey((string) data_get($variant, 'variant_name', ''));
+            if ($valueKey !== '') {
+                $variantsByValue[$valueKey][] = $variant;
+            }
+        }
+
+        $partition = ['processable' => [], 'blocked' => []];
+        foreach ($variants as $variant) {
+            $valueKey = $this->tiktokSalesAttributeValueKey((string) data_get($variant, 'variant_name', ''));
+            $reason = match (true) {
+                $valueKey === '' => 'Nama varian Shopee kosong; perlu verifikasi manual.',
+                isset($existingValues[$valueKey]) => 'Nilai atribut varian sudah ada di TikTok; perlu verifikasi manual.',
+                count($variantsByValue[$valueKey] ?? []) > 1 => 'Nama varian Shopee duplikat dalam batch; perlu verifikasi manual.',
+                default => null,
+            };
+
+            if ($reason === null) {
+                $partition['processable'][] = $variant;
+            } else {
+                $partition['blocked'][] = $variant + ['reason' => $reason];
+            }
+        }
+
+        return $partition;
     }
 
     private function tiktokPartialEditNewSkuTemplate(array $existingSkus, array $existingDetail, string $productId): array
@@ -8842,8 +8991,22 @@ class OmnichannelController extends Controller
             return $this->completeBulkTiktokVariantGroupResult($result);
         }
 
+        $attributePartition = $this->partitionBulkTiktokVariantsBySalesAttributeValue(
+            $existingSkus,
+            $freshGroup['variants']->all()
+        );
+        foreach ($attributePartition['blocked'] as $blocked) {
+            $this->appendBulkTiktokVariantOutcome(
+                $result,
+                $blocked,
+                'skipped',
+                null,
+                (string) ($blocked['reason'] ?? 'Nilai atribut varian TikTok tidak aman untuk diproses otomatis.')
+            );
+        }
+
         $preparedVariants = [];
-        foreach ($freshGroup['variants'] as $variant) {
+        foreach ($attributePartition['processable'] as $variant) {
             $sellerSku = $this->normalizedMarketplaceSellerSku($variant['seller_sku'] ?? '');
             if ($sellerSku === '' || isset($existingSellerSkus[$sellerSku])) {
                 $this->appendBulkTiktokVariantOutcome($result, $variant, 'skipped', null, 'SKU sudah ada di TikTok.');
@@ -9033,11 +9196,27 @@ class OmnichannelController extends Controller
             'model_id' => ['nullable', 'string'],
             'product_id' => ['nullable', 'string'],
             'sku_id' => ['nullable', 'string'],
+            'account_key' => ['nullable', 'string'],
+            'repair_template' => ['sometimes', 'boolean'],
+            'expected_sku' => ['present_if:repair_template,true', 'nullable', 'string'],
+            'expected_name' => ['required_if:repair_template,true', 'string'],
         ]);
 
         $channel = strtolower(trim((string) $data['channel']));
         $sellerSku = trim((string) $data['seller_sku']);
         abort_if($sellerSku === '', 422, 'SKU wajib diisi.');
+        if ($channel === 'shopee') {
+            $accountKey = trim((string) ($data['account_key'] ?? self::PRIMARY_SHOPEE_ACCOUNT_KEY));
+            $account = $this->resolveAccount($accountKey, 'shopee');
+            abort_if(($account['enabled'] ?? true) !== true, 422, 'Akun marketplace sedang dinonaktifkan.');
+            $this->requestedMarketplaceAccountKey = $accountKey;
+        } else {
+            $accountKey = trim((string) ($data['account_key'] ?? 'tiktok-agnishopbjm'));
+            $account = $this->resolveAccount($accountKey, 'tiktok');
+            abort_if($accountKey !== 'tiktok-agnishopbjm' || ($account['enabled'] ?? true) !== true,
+                422, 'Akun TikTok tidak tersedia untuk perbaikan SKU.');
+            $this->requestedMarketplaceAccountKey = $accountKey;
+        }
         $this->autoRefreshMarketplaceTokens();
 
         $now = now();
@@ -9054,6 +9233,14 @@ class OmnichannelController extends Controller
             $itemId = trim((string) ($data['item_id'] ?? ''));
             $modelId = trim((string) ($data['model_id'] ?? ''));
             abort_if($itemId === '' || $modelId === '', 422, 'Item ID atau Model ID Shopee belum lengkap.');
+            $product = DB::table('shopee_product')->where('item_id', $itemId)->first();
+            $model = DB::table('shopee_product_model')->where('item_id', $itemId)->where('model_id', $modelId)->first();
+            abort_if(! $product || ! $model, 422, 'Produk atau varian tidak ditemukan. Sync produk terlebih dahulu.');
+            if ($request->boolean('repair_template')) {
+                $siblings = DB::table('shopee_product_model')->where('item_id', $itemId)->get();
+                $sellerSku = $this->shopeeSkuRepairTarget($itemId, $model, $siblings, $data);
+                $result['seller_sku'] = $sellerSku;
+            }
             $oldSellerSku = (string) (DB::table('shopee_product_model')
                 ->where('item_id', $itemId)
                 ->where('model_id', $modelId)
@@ -9073,11 +9260,13 @@ class OmnichannelController extends Controller
             ];
 
             try {
-                $config = $this->shopeeConfig();
-                $context = $this->resolveShopeeApiTestContext([]);
+                $config = $this->shopeeConfig($account);
+                $context = $this->resolveShopeeApiTestContext(['account_key' => $accountKey]);
                 $shopId = (int) ($context['shop_id'] ?? 0);
                 $accessToken = trim((string) ($context['access_token'] ?? ''));
                 abort_if($shopId <= 0 || $accessToken === '', 422, 'Token Shopee aktif belum lengkap.');
+                abort_if(($context['account_key'] ?? '') !== $accountKey || (string) $product->shop_id !== (string) $shopId,
+                    422, 'Produk tidak dimiliki toko yang dipilih.');
 
                 $response = $this->shopeeSignedPost($config, '/api/v2/product/update_model', $shopId, $accessToken, $payload);
                 $result['response'] = $response;
@@ -9088,10 +9277,12 @@ class OmnichannelController extends Controller
                         ->where('item_id', $itemId)
                         ->where('model_id', $modelId)
                         ->update(['model_sku' => $sellerSku, 'updated_at' => $now]);
-                    DB::table('stock_master')
-                        ->where('shopee_product_id', $itemId)
-                        ->where('shopee_sku', $modelId)
-                        ->update(['shopee_seller_sku' => $sellerSku, 'updated_at' => $now]);
+                    if ($accountKey === self::PRIMARY_SHOPEE_ACCOUNT_KEY) {
+                        DB::table('stock_master')
+                            ->where('shopee_product_id', $itemId)
+                            ->where('shopee_sku', $modelId)
+                            ->update(['shopee_seller_sku' => $sellerSku, 'updated_at' => $now]);
+                    }
                 }
             } catch (\Throwable $exception) {
                 $result['status'] = 'error';
@@ -9133,6 +9324,16 @@ class OmnichannelController extends Controller
             abort_if(! is_array($detail), 422, 'Detail produk TikTok belum bisa dibaca untuk menjaga SKU lain tidak terhapus.');
             $detailPayload = is_array($detail['product'] ?? null) ? $detail['product'] : $detail;
 
+            if ($request->boolean('repair_template')) {
+                $repairSkus = array_map(fn (array $sku): array => [
+                    'sku_id' => (string) ($sku['id'] ?? $sku['sku_id'] ?? ''),
+                    'sku_name' => $this->deriveTiktokSkuName($sku),
+                    'seller_sku' => $this->extractTiktokSellerSku($sku),
+                ], $this->normalizeTiktokSkuList($detailPayload));
+                $sellerSku = app(TiktokSkuRepairPlan::class)->target($productId, $repairSkus, $skuId, $data);
+                $result['seller_sku'] = $sellerSku;
+            }
+
             $skuRows = $this->buildTiktokPartialEditSkuRows(
                 $detailPayload,
                 $skuId,
@@ -9154,6 +9355,26 @@ class OmnichannelController extends Controller
             $response = $this->submitTiktokPartialEditPayload($tiktokPath, $tiktokPayload, $context);
             $result['response'] = $response;
             $result['status'] = (int) ($response['code'] ?? -1) === 0 ? 'ok' : 'error';
+
+            if ($result['status'] === 'ok' && $request->boolean('repair_template')) {
+                try {
+                    $verifiedDetail = $this->fetchTiktokProductDetail(
+                        $config, $accessToken,
+                        (object) ['shop_id' => $shopId, 'shop_cipher' => $shopCipher, 'cipher' => $shopCipher],
+                        $productId, $config['api_host'].'/product/202309/products/'
+                    );
+                    $verifiedDetail = is_array($verifiedDetail['product'] ?? null) ? $verifiedDetail['product'] : $verifiedDetail;
+                    $verified = is_array($verifiedDetail) && collect($this->normalizeTiktokSkuList($verifiedDetail))
+                        ->contains(fn (array $sku): bool => (string) ($sku['id'] ?? $sku['sku_id'] ?? '') === $skuId
+                            && $this->extractTiktokSellerSku($sku) === $sellerSku);
+                } catch (\Throwable) {
+                    $verified = false;
+                }
+                if (! $verified) {
+                    $result['status'] = 'submitted_unverified';
+                    $result['message'] = 'Diterima TikTok, menunggu verifikasi katalog. Sync sebelum mencoba kembali.';
+                }
+            }
 
             if ($result['status'] === 'ok') {
                 DB::table('tiktok_products')

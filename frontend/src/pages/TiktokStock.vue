@@ -1,5 +1,5 @@
 <template>
-  <section class="page-shell">
+  <section class="page-shell" :inert="cleanupBusy">
     <header class="page-header">
       <div>
         <p>Marketplace</p>
@@ -7,7 +7,12 @@
       </div>
       <div class="header-actions">
         <button class="ghost" @click="resetFilters">Reset Filter</button>
-        <button class="primary tiktok" @click="syncAndLoad" :disabled="loading">
+        <button class="bulk-sku-action" @click="openSkuRepair(null, null, true)" :disabled="loading || repairBusy || Boolean(updatingSkuKey)">Isi SKU Kosong</button>
+        <button class="bulk-sku-action" @click="openSkuRepair()" :disabled="loading || repairBusy || Boolean(updatingSkuKey)">{{ repairBusy ? 'Memproses SKU...' : 'Perbaiki SKU Semua Produk & Varian' }}</button>
+        <OrphanVariantCleanup :account-key="accountKey || 'tiktok-agnishopbjm'" :account-name="accountName"
+          :disabled="loading || repairBusy || Boolean(updatingSkuKey) || Boolean(syncingProductId) || Boolean(deletingVariantKey)"
+          @busy="cleanupBusy = $event" @completed="loadData(false)" />
+        <button class="primary tiktok" @click="syncAndLoad" :disabled="loading || repairBusy">
           {{ loading ? 'Memuat...' : 'Ambil Produk' }}
         </button>
       </div>
@@ -164,6 +169,7 @@
                     <button title="Refresh produk ini" @click="syncProduct(item)" :disabled="syncingProductId === item.product_id">
                       {{ syncingProductId === item.product_id ? 'Syncing...' : 'Sync' }}
                     </button>
+                    <button v-if="repairRows([item]).length" @click="openSkuRepair(item)" :disabled="repairBusy || Boolean(updatingSkuKey)">Perbaiki SKU ({{ repairRows([item]).length }})</button>
                   </div>
                 </td>
               </tr>
@@ -180,6 +186,8 @@
                       <span class="variant-code">
                         <small>SKU Real</small>
                         <strong>{{ tiktokRealSku(sku) || 'Tidak ada SKU' }}</strong>
+                        <small v-if="sku.sku_repair_blocked">{{ sku.sku_repair_blocked }}</small>
+                        <small v-else-if="tiktokRealSku(sku) !== templateSku(item, sku)">SKU tidak sesuai template</small>
                         <small>SKU Template</small>
                         <span class="copy-line">
                           <code>{{ templateSku(item, sku) }}</code>
@@ -192,6 +200,7 @@
                       </span>
                       <strong>Stock {{ sku.stock_qty || 0 }}</strong>
                       <span class="variant-actions">
+                        <button v-if="tiktokRealSku(sku) !== templateSku(item, sku) || sku.sku_repair_blocked" class="update-sku-btn" @click="openSkuRepair(item, sku)" :disabled="repairBusy || Boolean(updatingSkuKey)">Perbaiki sesuai template</button>
                         <input
                           v-model.trim="manualSkuDrafts[tiktokSkuKey(item, sku)]"
                           class="manual-sku-input"
@@ -238,6 +247,28 @@
       </div>
     </div>
 
+    <div v-if="repairModal.open" class="modal-backdrop" @click.self="closeSkuRepair" @keydown.esc="closeSkuRepair">
+      <section class="confirm-modal repair-modal" role="dialog" aria-modal="true" aria-labelledby="tiktok-repair-title">
+        <h2 id="tiktok-repair-title">Perbaiki SKU TikTok</h2>
+        <p>{{ repairModal.accountName }} · {{ repairModal.productName }}</p>
+        <p>SKU mengikuti nama varian TikTok terbaru. Prefix Item ID yang konsisten dipertahankan; produk tanpa prefix internal memakai Product ID TikTok. Perubahan dikirim ke toko ini setelah konfirmasi.</p>
+        <div class="repair-rows">
+          <div v-for="row in repairModal.rows" :key="`${row.productId}:${row.skuId}`" class="repair-row">
+            <small>{{ row.productName }} · {{ row.productId }}</small>
+            <strong>{{ row.name }}</strong>
+            <small>SKU saat ini</small><code>{{ row.current || '(kosong)' }}</code>
+            <small>SKU yang benar</small><code>{{ row.target || '-' }}</code>
+            <p v-if="row.blocked || row.status">{{ row.blocked || row.message || row.status }}</p>
+          </div>
+        </div>
+        <p role="status">{{ repairModal.message }}</p>
+        <div class="modal-actions">
+          <button class="ghost" @click="closeSkuRepair" :disabled="repairBusy">Tutup</button>
+          <button class="bulk-sku-action" @click="submitSkuRepair" :disabled="repairBusy || !repairPending.length">{{ repairBusy ? 'Memproses...' : `Perbaiki ${repairPending.length} SKU` }}</button>
+        </div>
+      </section>
+    </div>
+
     <div v-if="deleteModal.open" class="modal-backdrop" @click.self="closeDeleteVariantModal">
       <section class="confirm-modal" role="dialog" aria-modal="true" aria-labelledby="delete-variant-title">
         <h2 id="delete-variant-title">Hapus Varian TikTok</h2>
@@ -282,8 +313,10 @@
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import OrphanVariantCleanup from '@/components/OrphanVariantCleanup.vue'
+import { computed, onMounted, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { omnichannelService } from '@/services'
+import { tiktokTemplateSku, tiktokSkuRepairRows as repairRows } from './tiktokSkuRepairState'
 
 const props = defineProps({
   accountKey: { type: String, default: '' },
@@ -292,6 +325,80 @@ const props = defineProps({
 })
 
 const accountParams = () => props.accountKey ? { account_key: props.accountKey } : {}
+const cleanupBusy = ref(false)
+const repairBusy = ref(false)
+const repairModal = reactive({ open: false, rows: [], accountKey: '', accountName: '', productName: '', message: '' })
+const repairPending = computed(() => repairModal.rows.filter(row => !row.blocked && !row.status))
+let repairMounted = true
+onBeforeUnmount(() => { repairMounted = false })
+const closeSkuRepair = () => { if (!repairBusy.value) repairModal.open = false }
+const openSkuRepair = async (item = null, sku = null, emptyOnly = false) => {
+  if (repairBusy.value) return
+  repairBusy.value = true
+  const accountKey = props.accountKey || 'tiktok-agnishopbjm'
+  Object.assign(repairModal, {
+    open: true, rows: [], accountKey, accountName: props.accountName,
+    productName: item?.product_name || 'Semua produk dan varian toko ini (termasuk di luar filter / halaman)',
+    message: 'Mengambil katalog TikTok terbaru. Proses ini dapat memerlukan beberapa menit...'
+  })
+  try {
+    const response = await omnichannelService.tiktokItems(true, { account_key: accountKey, ...(item ? { product_id: item.product_id } : {}) })
+    if (!repairMounted) return
+    if (response.data.sync?.status !== 'ok') throw new Error(response.data.sync?.message || 'Sync TikTok gagal.')
+    items.value = response.data.items || []
+    const products = item ? items.value.filter(candidate => String(candidate.product_id) === String(item.product_id)) : items.value
+    if (item && !products.length) throw new Error('Produk tidak ditemukan di katalog terbaru.')
+    repairModal.rows = repairRows(products, emptyOnly).filter(row => !sku || row.skuId === String(sku.sku_id))
+    repairModal.message = repairModal.rows.length
+      ? `${repairModal.rows.length} SKU pada ${new Set(repairModal.rows.map(row => row.productId)).size} produk. Periksa preview sebelum konfirmasi.`
+      : 'Semua SKU sudah sesuai.'
+  } catch (error) {
+    repairModal.rows = []
+    repairModal.message = error.response?.data?.message || error.message
+  } finally { repairBusy.value = false }
+}
+const submitSkuRepair = async () => {
+  if (repairBusy.value) return
+  repairBusy.value = true
+  const pending = [...repairPending.value]
+  const awaitingProducts = new Set()
+  try {
+    for (const row of pending) {
+      if (!repairMounted) break
+      if (awaitingProducts.has(row.productId)) {
+        row.status = 'Ditunda'
+        row.message = 'Menunggu perubahan SKU sebelumnya pada produk ini terverifikasi. Sync sebelum mencoba ulang.'
+        continue
+      }
+      row.status = 'Memproses'
+      try {
+        const response = await omnichannelService.updateMarketplaceVariantSku({
+          channel: 'tiktok', account_key: repairModal.accountKey, product_id: row.productId,
+          sku_id: row.skuId, seller_sku: row.target, repair_template: true,
+          expected_sku: row.current, expected_name: row.name
+        })
+        if (response.data?.status === 'submitted_unverified') {
+          awaitingProducts.add(row.productId)
+          row.status = 'Menunggu verifikasi'
+          row.message = response.data.message
+        } else {
+          if (response.data?.status !== 'ok') throw new Error(response.data?.response?.message || 'TikTok menolak perubahan.')
+          row.status = 'Berhasil'
+          const product = items.value.find(item => String(item.product_id) === row.productId)
+          const sku = product?.skus?.find(sku => String(sku.sku_id) === row.skuId)
+          if (sku) sku.seller_sku = response.data.seller_sku
+        }
+      } catch (error) {
+        awaitingProducts.add(row.productId)
+        row.status = 'Gagal'
+        row.message = error.response?.data?.response?.message || error.response?.data?.message || error.message
+      }
+      repairModal.message = `Diproses ${pending.filter(row => row.status && row.status !== 'Memproses').length} / ${pending.length} SKU.`
+    }
+    repairModal.message = ['Berhasil', 'Gagal', 'Menunggu verifikasi', 'Ditunda'].map(status => `${status}: ${repairModal.rows.filter(row => row.status === status).length}`).join(' | ')
+      + ` | Perlu diperiksa: ${repairModal.rows.filter(row => row.blocked).length}. Sync sebelum mencoba ulang.`
+  } finally { repairBusy.value = false }
+}
 
 const items = ref([])
 const expanded = ref({})
@@ -404,11 +511,7 @@ const tiktokRealSku = (sku) => marketplaceSku(sku?.seller_sku)
 const firstRealSku = (rows, key) => (rows || []).map((row) => marketplaceSku(row?.[key])).find(Boolean) || ''
 const missingTiktokSku = (sku) => !tiktokRealSku(sku)
 const itemHasMissingSku = (item) => (item?.skus || []).some((sku) => missingTiktokSku(sku))
-const templateSku = (item, sku) => {
-  const sellerSku = String(sku?.seller_sku || '').trim()
-  if (sellerSku.toUpperCase().startsWith('INT-')) return sellerSku
-  return sku?.kode_variasi || `INT-${item?.product_id || 'PRODUCT'}-${skuFragment(sku?.sku_name)}`
-}
+const templateSku = tiktokTemplateSku
 const variationCode = templateSku
 const tiktokSkuKey = (item, sku) => `${item?.product_id || ''}:${sku?.sku_id || sku?.tiktok_sku || ''}`
 const manualSkuValue = (key) => String(manualSkuDrafts[key] || '').trim()
@@ -457,6 +560,7 @@ const updateMissingSku = async (item, sku) => {
     const sellerSku = targetSku(item, sku)
     const response = await omnichannelService.updateMarketplaceVariantSku({
       channel: 'tiktok',
+      ...accountParams(),
       product_id: item.product_id,
       sku_id: sku.sku_id || sku.tiktok_sku,
       seller_sku: sellerSku
@@ -643,7 +747,14 @@ onMounted(loadData)
 .page-header { display: flex; justify-content: space-between; align-items: center; gap: 16px; margin-bottom: 16px; }
 .page-header p { color: #64748b; margin-bottom: 4px; font-size: 13px; }
 .page-header h1 { font-size: 26px; letter-spacing: 0; }
-.header-actions { display: flex; gap: 10px; }
+.header-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 10px; }
+.bulk-sku-action { background: #1d4ed8; color: #fff; }
+.bulk-sku-action:disabled { opacity: .55; cursor: not-allowed; }
+.repair-modal > p { margin: 10px 0; color: #475569; }
+.repair-rows { max-height: 50vh; overflow: auto; }
+.repair-row { display: grid; gap: 5px; padding: 12px; border: 1px solid #d9e2ec; border-radius: 6px; margin: 8px 0; }
+.repair-row small { color: #64748b; }
+.repair-row code { overflow-wrap: anywhere; }
 button, input, select { font-size: 13px; }
 button { border: 0; border-radius: 6px; padding: 9px 12px; cursor: pointer; }
 .primary { color: #fff; }
@@ -722,6 +833,7 @@ small { display: block; color: #64748b; line-height: 1.55; }
 .pagination span { color: #64748b; font-size: 13px; }
 .modal-backdrop { position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; background: rgba(15, 23, 42, .42); padding: 16px; }
 .confirm-modal { width: min(520px, 100%); background: #fff; border: 1px solid #e2e8f0; border-radius: 8px; box-shadow: 0 24px 70px rgba(15, 23, 42, .22); padding: 18px; }
+.repair-modal { width: min(760px, 100%); max-height: 90vh; overflow: auto; }
 .confirm-modal h2 { color: #0f172a; font-size: 20px; letter-spacing: 0; margin: 0 0 8px; }
 .danger-copy { color: #991b1b; background: #fef2f2; border: 1px solid #fecaca; border-radius: 6px; font-size: 13px; line-height: 1.45; margin: 0 0 12px; padding: 10px; }
 .delete-details { display: grid; gap: 8px; margin-bottom: 12px; }

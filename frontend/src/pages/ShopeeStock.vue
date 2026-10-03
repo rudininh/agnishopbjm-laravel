@@ -1,5 +1,5 @@
 <template>
-  <section class="page-shell">
+  <section class="page-shell" :inert="cleanupBusy">
     <header class="page-header">
       <div>
         <p>Marketplace</p>
@@ -10,12 +10,18 @@
         <button
           class="bulk-sku-action"
           type="button"
-          :disabled="loading || bulkSkuUpdating || missingSkuVariantCount === 0"
+          :disabled="loading || bulkSkuUpdating || repairBusy || missingSkuVariantCount === 0"
           @click="openBulkSkuModal"
         >
           {{ bulkSkuUpdating ? 'Mengisi SKU...' : `Isi SKU Kosong (${missingSkuVariantCount})` }}
         </button>
-        <button class="primary shopee" @click="syncAndLoad" :disabled="loading || bulkSkuUpdating">
+        <button class="bulk-sku-action" type="button" @click="openSkuRepair()" :disabled="loading || bulkSkuUpdating || repairBusy || Boolean(updatingSkuKey) || Boolean(syncingItemId)">
+          {{ repairBusy ? 'Memproses SKU...' : 'Perbaiki SKU Semua Produk & Varian' }}
+        </button>
+        <OrphanVariantCleanup :account-key="accountKey" :account-name="accountName"
+          :disabled="loading || bulkSkuUpdating || repairBusy || Boolean(updatingSkuKey) || Boolean(syncingItemId) || Boolean(deletingVariantKey)"
+          @busy="cleanupBusy = $event" @completed="loadData(false)" />
+        <button class="primary shopee" @click="syncAndLoad" :disabled="loading || bulkSkuUpdating || repairBusy">
           {{ loading ? 'Memuat...' : 'Ambil Produk' }}
         </button>
       </div>
@@ -174,6 +180,9 @@
                     <button title="Refresh produk ini" @click="syncProduct(item)" :disabled="syncingItemId === item.item_id">
                       {{ syncingItemId === item.item_id ? 'Syncing...' : 'Sync' }}
                     </button>
+                    <button v-if="skuRepairRows(item).length" class="bulk-sku-action" @click="openSkuRepair(item)" :disabled="repairBusy || Boolean(updatingSkuKey)">
+                      Perbaiki SKU ({{ skuRepairRows(item).length }})
+                    </button>
                   </div>
                 </td>
               </tr>
@@ -191,6 +200,7 @@
                         <small>SKU Real</small>
                         <strong>{{ shopeeRealSku(model) || 'Tidak ada SKU' }}</strong>
                         <span v-if="missingShopeeSku(model)" class="missing-sku-badge">SKU Shopee Kosong</span>
+                        <span v-else-if="shopeeRealSku(model) !== templateSku(item, model)" class="missing-sku-badge">SKU tidak sesuai template</span>
                         <small>SKU Template</small>
                         <span class="copy-line">
                           <code>{{ templateSku(item, model) }}</code>
@@ -205,6 +215,7 @@
                       </span>
                       <strong>Stock {{ model.stock || 0 }}</strong>
                       <span class="variant-actions">
+                        <button v-if="shopeeRealSku(model) !== templateSku(item, model)" class="update-sku-btn" @click="openSkuRepair(item, model)" :disabled="repairBusy || Boolean(updatingSkuKey)">Perbaiki sesuai template</button>
                         <input
                           v-model.trim="manualSkuDrafts[shopeeSkuKey(item, model)]"
                           class="manual-sku-input"
@@ -249,6 +260,28 @@
         <span>Halaman {{ currentPage }} dari {{ totalPages }}</span>
         <button type="button" :disabled="currentPage === totalPages" @click="setPage(currentPage + 1)">Next</button>
       </div>
+    </div>
+
+    <div v-if="repairModal.open" class="modal-backdrop" @click.self="closeSkuRepair" @keydown.esc="closeSkuRepair">
+      <section class="confirm-modal repair-modal" role="dialog" aria-modal="true" aria-labelledby="repair-sku-title">
+        <h2 id="repair-sku-title">Perbaiki SKU Shopee</h2>
+        <p>{{ repairModal.accountName }} · {{ repairModal.productName }}</p>
+        <p>Template: INT-ITEM_ID-NAMA-VARIAN. Perubahan dikirim langsung ke toko Shopee ini. Stok dan harga tetap.</p>
+        <div class="repair-rows">
+          <div v-for="row in repairModal.rows" :key="`${row.itemId}:${row.modelId}`" class="repair-row">
+            <small v-if="repairModal.allProducts">{{ row.productName }} · Item ID: {{ row.itemId }}</small>
+            <strong>{{ row.name }}</strong>
+            <small>SKU saat ini</small><code>{{ row.current || '(kosong)' }}</code>
+            <small>SKU yang benar</small><code>{{ row.target }}</code>
+            <p v-if="row.blocked || row.status" :class="{ 'modal-error': row.blocked || row.status === 'Gagal' }">{{ row.blocked || row.message || row.status }}</p>
+          </div>
+        </div>
+        <p v-if="repairModal.message" role="status">{{ repairModal.message }}</p>
+        <div class="modal-actions">
+          <button class="ghost" @click="closeSkuRepair" :disabled="repairBusy">Tutup</button>
+          <button class="bulk-sku-action" @click="submitSkuRepair" :disabled="repairBusy || !repairPending.length">{{ repairBusy ? 'Memperbaiki...' : `Perbaiki ${repairPending.length} SKU` }}</button>
+        </div>
+      </section>
     </div>
 
     <div v-if="bulkSkuModal.open" class="modal-backdrop" @click.self="closeBulkSkuModal">
@@ -308,8 +341,10 @@
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import OrphanVariantCleanup from '@/components/OrphanVariantCleanup.vue'
+import { computed, onMounted, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { omnichannelService } from '@/services'
+import { shopeeTemplateSku, shopeeSkuRepairRows as skuRepairRows, shopeeAllSkuRepairRows } from './shopeeSkuRepairState'
 
 const props = defineProps({
   accountKey: { type: String, default: '' },
@@ -318,6 +353,69 @@ const props = defineProps({
 })
 
 const accountParams = () => props.accountKey ? { account_key: props.accountKey } : {}
+const cleanupBusy = ref(false)
+const repairBusy = ref(false)
+const repairModal = reactive({ open: false, rows: [], allProducts: false, accountKey: '', accountName: '', productName: '', message: '' })
+const repairPending = computed(() => repairModal.rows.filter(row => !row.blocked && !row.status))
+let repairMounted = true
+onBeforeUnmount(() => { repairMounted = false })
+const closeSkuRepair = () => { if (!repairBusy.value) repairModal.open = false }
+const openSkuRepair = async (item = null, model = null) => {
+  if (repairBusy.value) return
+  repairBusy.value = true
+  const accountKey = props.accountKey || 'shopee-agnishopbjm'
+  Object.assign(repairModal, {
+    open: true, rows: [], allProducts: !item, accountKey, accountName: props.accountName,
+    productName: item?.nama || 'Semua produk dan varian toko ini (termasuk di luar filter / halaman)',
+    message: item ? 'Mengambil data produk terbaru...' : 'Mengambil seluruh produk terbaru dari Shopee. Proses ini dapat memerlukan beberapa menit...'
+  })
+  try {
+    const response = await omnichannelService.shopeeItems(true, { account_key: accountKey, ...(item ? { item_id: item.item_id } : {}) })
+    if (!repairMounted) return
+    if (response.data.sync?.status !== 'ok') throw new Error(response.data.sync?.message || 'Sync produk gagal.')
+    items.value = response.data.items || []
+    const fresh = item ? items.value.find(candidate => String(candidate.item_id) === String(item.item_id)) : null
+    if (item && !fresh) throw new Error('Produk tidak ditemukan pada toko ini.')
+    const rows = (item ? skuRepairRows(fresh) : shopeeAllSkuRepairRows(items.value))
+      .filter(row => !model || row.modelId === String(model.model_id))
+    Object.assign(repairModal, { rows, message: rows.length
+      ? `${rows.length} SKU tidak sesuai template pada ${new Set(rows.map(row => row.itemId)).size} produk. Periksa preview sebelum memperbaiki.`
+      : 'Semua SKU sudah sesuai template.' })
+  } catch (error) {
+    repairModal.rows = []
+    repairModal.message = error.response?.data?.message || error.message
+    syncMessage.value = error.response?.data?.message || error.message
+    syncTone.value = 'error'
+  } finally { repairBusy.value = false }
+}
+const submitSkuRepair = async () => {
+  if (repairBusy.value) return
+  repairBusy.value = true
+  const pending = [...repairPending.value]
+  try {
+    for (const row of pending) {
+      if (!repairMounted) break
+      row.status = 'Memproses'
+      try {
+        const response = await omnichannelService.updateMarketplaceVariantSku({
+          channel: 'shopee', account_key: repairModal.accountKey, item_id: row.itemId,
+          model_id: row.modelId, seller_sku: row.target, repair_template: true,
+          expected_sku: row.current, expected_name: row.name
+        })
+        if (response.data?.status !== 'ok') throw new Error(response.data?.response?.message || 'Shopee menolak perubahan.')
+        row.status = 'Berhasil'
+        const item = items.value.find(item => String(item.item_id) === row.itemId)
+        const model = item?.models?.find(model => String(model.model_id) === row.modelId)
+        if (model) model.model_sku = response.data.seller_sku
+      } catch (error) {
+        row.status = 'Gagal'
+        row.message = error.response?.data?.response?.message || error.response?.data?.message || error.message
+      }
+      repairModal.message = `Diproses ${pending.filter(candidate => ['Berhasil', 'Gagal'].includes(candidate.status)).length} / ${pending.length} SKU.`
+    }
+    repairModal.message = `Berhasil ${repairModal.rows.filter(row => row.status === 'Berhasil').length} | Gagal ${repairModal.rows.filter(row => row.status === 'Gagal').length} | Perlu diperiksa ${repairModal.rows.filter(row => row.blocked).length}. Tutup dan buka ulang untuk mengecek data terbaru.`
+  } finally { repairBusy.value = false }
+}
 
 const items = ref([])
 const expanded = ref({})
@@ -474,11 +572,7 @@ const missingSkuVariantCount = computed(() => items.value.reduce(
   (count, item) => count + (item.models || []).filter(missingShopeeSku).length,
   0
 ))
-const templateSku = (item, model) => {
-  const modelSku = String(model?.model_sku || '').trim()
-  if (modelSku.toUpperCase().startsWith('INT-')) return modelSku
-  return model?.kode_variasi || `INT-${item?.item_id || 'ITEM'}-${skuFragment(model?.name)}`
-}
+const templateSku = shopeeTemplateSku
 const variationCode = templateSku
 const shopeeSkuKey = (item, model) => `${item?.item_id || ''}:${model?.model_id || ''}`
 const manualSkuValue = (key) => String(manualSkuDrafts[key] || '').trim()
@@ -531,6 +625,7 @@ const updateMissingSku = async (item, model) => {
     const sellerSku = targetSku(item, model)
     const response = await omnichannelService.updateMarketplaceVariantSku({
       channel: 'shopee',
+      ...accountParams(),
       item_id: item.item_id,
       model_id: model.model_id,
       seller_sku: sellerSku
@@ -784,7 +879,7 @@ onMounted(loadData)
 .page-header { display: flex; justify-content: space-between; align-items: center; gap: 16px; margin-bottom: 16px; }
 .page-header p { color: #64748b; margin-bottom: 4px; font-size: 13px; }
 .page-header h1 { font-size: 26px; letter-spacing: 0; }
-.header-actions { display: flex; gap: 10px; }
+.header-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 10px; }
 button, input, select { font-size: 13px; }
 button { border: 0; border-radius: 6px; padding: 9px 12px; cursor: pointer; }
 .primary { color: #fff; }
@@ -870,6 +965,12 @@ small { display: block; color: #64748b; line-height: 1.55; }
 .pagination span { color: #64748b; font-size: 13px; }
 .modal-backdrop { position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; background: rgba(15, 23, 42, .42); padding: 16px; }
 .confirm-modal { width: min(520px, 100%); background: #fff; border: 1px solid #e2e8f0; border-radius: 8px; box-shadow: 0 24px 70px rgba(15, 23, 42, .22); padding: 18px; }
+.repair-modal { width: min(760px, 100%); max-height: 90vh; overflow: auto; }
+.repair-modal > p { margin: 10px 0; color: #475569; }
+.repair-rows { max-height: 50vh; overflow: auto; }
+.repair-row { display: grid; gap: 5px; padding: 12px; border: 1px solid #d9e2ec; border-radius: 6px; margin: 8px 0; }
+.repair-row small { color: #64748b; }
+.repair-row code { overflow-wrap: anywhere; }
 .confirm-modal h2 { color: #0f172a; font-size: 20px; letter-spacing: 0; margin: 0 0 8px; }
 .bulk-sku-copy { color: #1e3a8a; background: #dbeafe; border: 1px solid #93c5fd; border-radius: 6px; font-size: 13px; line-height: 1.45; margin: 0 0 12px; padding: 10px; }
 .danger-copy { color: #991b1b; background: #fef2f2; border: 1px solid #fecaca; border-radius: 6px; font-size: 13px; line-height: 1.45; margin: 0 0 12px; padding: 10px; }

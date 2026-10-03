@@ -68,6 +68,15 @@ class MarketplaceTargetSkuResolutionTest extends TestCase
         $this->assertBlockedTiktok();
     }
 
+    public function test_duplicate_sku_with_only_one_matching_name_is_still_ambiguous(): void
+    {
+        DB::table('tiktok_products')->insert([
+            ['product_id' => '100', 'sku_id' => '200', 'seller_sku' => 'SKU-GREEN', 'sku_name' => 'Green'],
+            ['product_id' => '101', 'sku_id' => '201', 'seller_sku' => 'SKU-GREEN', 'sku_name' => 'Blue'],
+        ]);
+        $this->assertBlockedTiktok();
+    }
+
     public function test_inactive_sku_is_blocked(): void
     {
         DB::table('tiktok_products')->insert(['product_id' => '100', 'sku_id' => '200', 'seller_sku' => 'SKU-GREEN', 'sku_name' => 'Green', 'is_active' => false]);
