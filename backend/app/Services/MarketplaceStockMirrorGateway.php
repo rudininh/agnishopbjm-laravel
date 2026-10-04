@@ -41,7 +41,14 @@ class MarketplaceStockMirrorGateway
             }
             [$stage,$offset] = explode(':', $cursor ?? '0:0');
             $data = $this->transport->call($key, 'GET', '/api/v2/product/get_item_list', ['offset' => (int) $offset, 'page_size' => 50, 'item_status' => ['NORMAL', 'UNLIST', 'BANNED'][(int) $stage]]);
-            if (! is_array($data['item'] ?? null) || ! is_bool($data['has_next_page'] ?? null)) {
+            $items = $data['item'] ?? null;
+            // Shopee omits `item` for an explicitly empty status category.
+            // A missing list without this evidence must still fail closed.
+            if ($items === null && in_array($data['total_count'] ?? null, [0, '0'], true)
+                && ($data['has_next_page'] ?? null) === false) {
+                $items = [];
+            }
+            if (! is_array($items) || ! array_is_list($items) || ! is_bool($data['has_next_page'] ?? null)) {
                 throw new \RuntimeException('Katalog tidak lengkap.');
             }
             if ($data['has_next_page']) {
@@ -52,7 +59,7 @@ class MarketplaceStockMirrorGateway
             } else {
                 $next = (int) $stage < 2 ? ((int) $stage + 1).':0' : null;
             }
-            $ids = array_map(fn ($r) => (string) ($r['item_id'] ?? ''), $data['item']);
+            $ids = array_map(fn ($r) => (string) ($r['item_id'] ?? ''), $items);
         } else {
             $data = $this->transport->call($key, 'POST', '/product/202502/products/search', ['page_size' => 50, ...($cursor ? ['page_token' => $cursor] : [])], ['status' => 'ALL']);
             if (! is_array($data['products'] ?? null) || ! array_key_exists('next_page_token', $data)) {

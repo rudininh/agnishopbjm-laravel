@@ -1,7 +1,34 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { stockMirrorScope, stockMirrorTargets, stockMirrorSummary, stockMirrorCanContinue, stockMirrorQuantity, continueStockMirror } from '../src/pages/marketplaceStockMirrorState.js'
+import { stockMirrorScope, stockMirrorTargets, stockMirrorSummary, stockMirrorCanContinue, stockMirrorQuantity, continueStockMirror, stockMirrorResultPage } from '../src/pages/marketplaceStockMirrorState.js'
 const agni='shopee-agnishopbjm',gita='shopee-gitacollectionbjm',tik='tiktok-agnishopbjm'
+test('result pagination shows only requested rows and keeps complete audit untouched', () => {
+  const items = Array.from({ length: 4114 }, (_, index) => ({ item_id: String(index + 1) }))
+  const first = stockMirrorResultPage(items, 1, 25)
+  assert.equal(first.total, 4114)
+  assert.equal(first.pages, 165)
+  assert.equal(first.rows.length, 25)
+  assert.equal(first.rows[0].item_id, '1')
+  assert.equal(first.rows[24].item_id, '25')
+  const next = stockMirrorResultPage(items, 2, 25)
+  assert.equal(next.from, 26)
+  assert.equal(next.to, 50)
+  assert.equal(next.rows[0].item_id, '26')
+  const last = stockMirrorResultPage(items, 999, 25)
+  assert.equal(last.page, 165)
+  assert.equal(last.rows.length, 14)
+  assert.equal(last.from, 4101)
+  assert.equal(last.to, 4114)
+  assert.equal(items.length, 4114)
+})
+test('result pagination handles empty, changing and invalid page inputs', () => {
+  assert.deepEqual(stockMirrorResultPage([], 10, 25), { rows: [], total: 0, page: 1, pages: 1, page_size: 25, from: 0, to: 0 })
+  const items = Array.from({ length: 80 }, (_, index) => index)
+  assert.equal(stockMirrorResultPage(items, 3, 50).page, 2)
+  assert.equal(stockMirrorResultPage(items, -3, 0).page, 1)
+  assert.equal(stockMirrorResultPage(items, NaN, 13).page_size, 25)
+  assert.equal(stockMirrorResultPage(items.slice(0, 5), 4, 25).page, 1)
+})
 test('account-bound scopes and invalid identity',()=>{
  assert.deepEqual(stockMirrorScope('all',agni),{type:'all',view_account_key:agni})
  assert.deepEqual(stockMirrorScope('variant',gita,'12','0'),{type:'variant',view_account_key:gita,product_id:'12',variant_id:'0'})

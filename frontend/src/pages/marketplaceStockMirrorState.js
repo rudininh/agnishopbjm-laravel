@@ -21,6 +21,18 @@ export function stockMirrorSummary(run) {
 }
 export const stockMirrorCanContinue = run => Boolean(run?.can_continue && ['scanning', 'running'].includes(run.status))
 export const stockMirrorQuantity = value => value == null ? 'Tidak tersedia' : value
+export function stockMirrorResultPage(items, requestedPage = 1, requestedSize = 25) {
+  const results = Array.isArray(items) ? items : []
+  const size = [25, 50, 100].includes(Number(requestedSize)) ? Number(requestedSize) : 25
+  const pages = Math.max(1, Math.ceil(results.length / size))
+  const input = Number(requestedPage)
+  const page = Math.min(pages, Math.max(1, Number.isInteger(input) ? input : 1))
+  const offset = (page - 1) * size
+  return {
+    rows: results.slice(offset, offset + size), total: results.length, page, pages, page_size: size,
+    from: results.length ? offset + 1 : 0, to: Math.min(offset + size, results.length)
+  }
+}
 export async function continueStockMirror(api, initial, update, alive) {
   let run = initial
   while (alive() && stockMirrorCanContinue(run)) {

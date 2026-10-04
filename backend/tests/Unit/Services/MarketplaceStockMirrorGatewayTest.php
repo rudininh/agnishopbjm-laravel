@@ -17,6 +17,7 @@ class MarketplaceStockMirrorGatewayTest extends TestCase
     private string $status = 'NORMAL';
     private string $mode = '';
     private bool $targetSkuDrift = false;
+    private ?array $catalogResponse = null;
     private array $tiktokInventory = [['warehouse_id' => 'wh', 'quantity' => 0]];
 
     protected function setUp(): void
@@ -65,6 +66,9 @@ class MarketplaceStockMirrorGatewayTest extends TestCase
                 return Http::response(['error' => '', 'response' => ['failure_list' => [], 'success_list' => [['model_id' => 101]]]]);
             }
             if (str_contains($r->url(), 'get_item_list')) {
+                if ($this->catalogResponse !== null) {
+                    return Http::response(['error' => '', 'response' => $this->catalogResponse]);
+                }
                 return Http::response(['error' => '', 'response' => ['item' => [['item_id' => 0 == $r['offset'] ? 10 : 20]], 'has_next_page' => 0 == $r['offset'], 'next_offset' => 50]]);
             }
             if (str_contains($r->url(), 'get_item_base_info')) {
@@ -100,6 +104,29 @@ class MarketplaceStockMirrorGatewayTest extends TestCase
         $this->mode = 'cursor';
         $this->expectException(\RuntimeException::class);
         $g->catalogPage(null);
+    }
+
+    public function testExplicitlyEmptyStatusWithoutItemListAdvancesAndCompletesCatalog(): void
+    {
+        // Real Shopee response for an empty BANNED category omits `item`.
+        $this->catalogResponse = ['total_count' => 0, 'has_next_page' => false, 'next' => 0];
+        $gateway = app(MarketplaceStockMirrorGateway::class);
+        $this->assertSame(['products' => [], 'next_cursor' => '2:0', 'complete' => false], $gateway->catalogPage('1:0'));
+        $this->assertSame(['products' => [], 'next_cursor' => null, 'complete' => true], $gateway->catalogPage('2:0'));
+    }
+
+    public function testMissingItemListStillRejectsUnprovenOrContradictoryEmptyResponses(): void
+    {
+        foreach ([['has_next_page' => false], ['total_count' => 4, 'has_next_page' => false],
+            ['total_count' => 0, 'has_next_page' => true], ['total_count' => 0]] as $response) {
+            $this->catalogResponse = $response;
+            try {
+                app(MarketplaceStockMirrorGateway::class)->catalogPage('2:0');
+                $this->fail('An incomplete or contradictory catalog was accepted.');
+            } catch (\RuntimeException $exception) {
+                $this->assertSame('Katalog tidak lengkap.', $exception->getMessage());
+            }
+        }
     }
 
     public function testSelectedSourceVariantNeverExpands(): void

@@ -20,8 +20,17 @@
       <p v-if="run.scope">Lingkup: {{ run.scope.type }}<template v-if="run.scope.product_id"> / Produk {{ run.scope.product_id }}</template><template v-if="run.scope.variant_id != null"> / Varian {{ run.scope.variant_id }}</template> · Toko tampilan: {{ run.scope.view_account_key }} · Tujuan: {{ run.target_accounts.map(targetName).join(', ') }}</p>
       <div class="mirror-summary"><span v-for="(value, key) in summary" :key="key">{{ labels[key] }}: <strong>{{ value }}</strong></span></div>
       <p v-if="run.status === 'scanning'">Katalog masih diperiksa; jumlah menunggu belum merupakan total katalog.</p>
+      <div class="mirror-pagination" role="navigation" aria-label="Halaman hasil sinkronisasi">
+        <span>Menampilkan {{ results.from }}–{{ results.to }} dari {{ results.total }} hasil</span>
+        <label>Baris per halaman <select v-model.number="pageSize"><option :value="25">25</option><option :value="50">50</option><option :value="100">100</option></select></label>
+        <button :disabled="results.page === 1" @click="resultPage = 1">Pertama</button>
+        <button :disabled="results.page === 1" @click="resultPage = results.page - 1">Sebelumnya</button>
+        <label>Halaman <input v-model.number="resultPage" type="number" min="1" :max="results.pages" step="1" aria-label="Nomor halaman hasil"> dari {{ results.pages }}</label>
+        <button :disabled="results.page === results.pages" @click="resultPage = results.page + 1">Selanjutnya</button>
+        <button :disabled="results.page === results.pages" @click="resultPage = results.pages">Terakhir</button>
+      </div>
       <div class="mirror-table"><table><thead><tr><th>Produk / varian Agni</th><th>SKU</th><th>Tujuan</th><th>Stok Agni</th><th>Sebelum</th><th>Sesudah</th><th>Hasil</th></tr></thead>
-        <tbody><tr v-for="item in run.items" :key="item.item_id"><td>{{ item.source_product_name || item.source_product_id }}<br>{{ item.source_variant_name || item.source_variant_id || '-' }}</td><td>{{ item.seller_sku || '-' }}</td><td>{{ targetName(item.target_account_key) }}</td><td>{{ quantity(item.source_stock) }}</td><td>{{ quantity(item.before_stock) }}</td><td>{{ quantity(item.after_stock) }}</td><td><strong>{{ labels[item.status] || item.status }}</strong><br>{{ item.message }}</td></tr></tbody>
+        <tbody><tr v-for="item in results.rows" :key="item.item_id"><td>{{ item.source_product_name || item.source_product_id }}<br>{{ item.source_variant_name || item.source_variant_id || '-' }}</td><td>{{ item.seller_sku || '-' }}</td><td>{{ targetName(item.target_account_key) }}</td><td>{{ quantity(item.source_stock) }}</td><td>{{ quantity(item.before_stock) }}</td><td>{{ quantity(item.after_stock) }}</td><td><strong>{{ labels[item.status] || item.status }}</strong><br>{{ item.message }}</td></tr></tbody>
       </table></div>
     </div>
   </section>
@@ -29,7 +38,7 @@
 <script setup>
 import { computed, onMounted, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { omnichannelService as api } from '@/services'
-import { stockMirrorSummary, stockMirrorCanContinue, stockMirrorQuantity as quantity, continueStockMirror, recoverStockMirror, createStockMirrorStarter } from '@/pages/marketplaceStockMirrorState'
+import { stockMirrorSummary, stockMirrorCanContinue, stockMirrorQuantity as quantity, stockMirrorResultPage, continueStockMirror, recoverStockMirror, createStockMirrorStarter } from '@/pages/marketplaceStockMirrorState'
 const props = defineProps({ accountKey: String, disabled: Boolean })
 const emit = defineEmits(['busy', 'targets', 'completed'])
 const destinations = [{key:'tiktok-agnishopbjm',name:'TikTok Agni'}, {key:'shopee-gitacollectionbjm',name:'Gitashop'}]
@@ -40,6 +49,11 @@ const storageKey = 'marketplace-stock-mirror:run'
 const active = computed(() => stockMirrorCanContinue(run.value))
 const locked = computed(() => inFlight.value || active.value || needsRecovery.value || Boolean(starter.pendingPayload))
 const summary = computed(() => stockMirrorSummary(run.value))
+const resultPage = ref(1), pageSize = ref(25)
+const results = computed(() => stockMirrorResultPage(run.value?.items, resultPage.value, pageSize.value))
+watch(() => run.value?.run_id, () => { resultPage.value = 1 })
+watch(pageSize, () => { resultPage.value = 1 })
+watch(results, result => { resultPage.value = result.page })
 const targetName = key => destinations.find(t => t.key === key)?.name || key
 const labels = { scanning:'Memeriksa katalog',running:'Berjalan',completed:'Selesai',scan_failed:'Pemeriksaan gagal',cancelled:'Dibatalkan',checked:'Diperiksa',success:'Berhasil',unchanged:'Sudah sama',skipped:'Dilewati',failed:'Gagal',unverified:'Belum terverifikasi',pending:'Menunggu',attempted:'Menunggu verifikasi' }
 watch(locked, value => emit('busy', value), {immediate:true,flush:'sync'})
@@ -104,5 +118,10 @@ onBeforeUnmount(() => {mounted=false;stop=true;emit('busy',false)})
 </script>
 <style scoped>
 .mirror-panel { margin:18px 28px 0 268px; padding:18px; border:1px solid #cbd5e1; border-radius:8px; background:#fff; color:#334155; }
+.mirror-pagination {display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:12px 0;font-size:13px}
+.mirror-pagination select,.mirror-pagination input {border:1px solid #cbd5e1;border-radius:5px;padding:6px;font:inherit}
+.mirror-pagination input {width:72px}
+.mirror-table {max-height:540px;overflow:auto}
+.mirror-table th {position:sticky;top:0;z-index:1}
 h2 {font-size:18px;margin:0 0 8px} p {font-size:13px;line-height:1.6} fieldset {border:1px solid #e2e8f0;border-radius:6px;display:flex;gap:18px} label {display:flex;align-items:center;gap:6px} button {padding:8px 12px;border:1px solid #94a3b8;border-radius:6px;background:#f8fafc;color:#0f172a;cursor:pointer} button:disabled {opacity:.5;cursor:not-allowed}.mirror-actions,.mirror-summary {display:flex;flex-wrap:wrap;gap:10px;margin:12px 0}.mirror-table {overflow-x:auto} table {border-collapse:collapse;width:100%;font-size:12px} th,td {padding:10px;border-bottom:1px solid #e2e8f0;text-align:left;vertical-align:top;min-width:90px} th {background:#f1f5f9} @media(max-width:820px){.mirror-panel{margin:18px}fieldset{flex-wrap:wrap}}
 </style>
