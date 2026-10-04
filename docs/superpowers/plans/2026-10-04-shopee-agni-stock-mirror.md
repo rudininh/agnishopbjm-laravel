@@ -37,11 +37,11 @@ cacheVerified(string $accountKey, string $productId, string $variantId, int $sto
 
 Gateway consumes MarketplaceAccountRegistry, fresh account-scoped API transport, and existing MarketplaceApiService inventory update methods. Validate ownership, expiry and unique shop identity; read all catalog pages with cursor checks. Strictly extract available inventory with explicit null on absent fields, accepting real zero. Validate local listing/mapping or unique exact-SKU candidates against fresh remote identities; reject conflicting mappings. Source scope may resolve multiple source products but never expands outside selected target rows. `cacheVerified` updates only target marketplace cache.
 
-- [ ] Write behavior tests for live zero/missing stock, Agni/Gita ownership isolation, full pagination, duplicate SKU/mapping ambiguity, inactive and deleted targets, scoped selection, stock-only write payload, sanitized failures, and unchanged Stock Master.
-- [ ] Run `php vendor/bin/phpunit --filter MarketplaceStockMirrorGatewayTest`, observe missing implementation failure.
-- [ ] Implement gateway interfaces and strict identity/stock handling until the tests pass.
-- [ ] Run the focused suite, lint new PHP, self-review and commit only Task 1 files.
-- [ ] Independent task review with the approved spec and diff; fix important findings before Task 2.
+- [x] Write behavior tests for live zero/missing stock, Agni/Gita ownership isolation, full pagination, duplicate SKU/mapping ambiguity, inactive and deleted targets, scoped selection, stock-only write payload, sanitized failures, and unchanged Stock Master.
+- [x] Run `php vendor/bin/phpunit --filter MarketplaceStockMirrorGatewayTest`, observe missing implementation failure.
+- [x] Implement gateway interfaces and strict identity/stock handling until the tests pass.
+- [x] Run the focused suite, lint new PHP, self-review and commit only Task 1 files.
+- [x] Independent task review with the approved spec and diff; fix important findings before Task 2.
 
 ## Task 2: Persistent runner, coordination and API
 
@@ -60,11 +60,11 @@ Scope: `{type:all|product|variant, view_account_key, product_id?, variant_id?}`.
 
 Run scanning and processing advance in bounded steps without a queue daemon. Store state safely before attempted requests; compare fresh source and target before writing, then read back. Reopened attempted items only verify, never resend. Cross-target source drift is unverified/skipped until a fresh user run. Run locking/claims prevent overlapping runs/steps; operation leases coordinate with local/remote STB and are renewed/released. Reject source write targets and foreign scope IDs; honor existing local marketplace authorization policy. Keep secrets server-only. Cancel prevents further deliveries and releases leases. Failed target reads must not stop unrelated successful targets.
 
-- [ ] Write API and runner tests with a fake gateway/lease: three scopes, two targets, replay protection, source failure/drift, target verification failure, timeout, interrupted step, competing steps/runs, reload, cancel, pagination failure, malicious targets/scope, zero and Stock Master preservation.
-- [ ] Run `php vendor/bin/phpunit --filter MarketplaceStockMirrorTest`, observe intended failures.
-- [ ] Implement migration, runner, lease and endpoints with a single atomic claim owner and attempted-write persistence.
-- [ ] Run gateway and runner suites plus PHP lint; commit Task 2 files.
-- [ ] Independent task review; fix important findings before Task 3.
+- [x] Write API and runner tests with a fake gateway/lease: three scopes, two targets, replay protection, source failure/drift, target verification failure, timeout, interrupted step, competing steps/runs, reload, cancel, pagination failure, malicious targets/scope, zero and Stock Master preservation.
+- [x] Run `php vendor/bin/phpunit --filter MarketplaceStockMirrorTest`, observe intended failures.
+- [x] Implement migration, runner, lease and endpoints with a single atomic claim owner and attempted-write persistence.
+- [x] Run gateway and runner suites plus PHP lint; commit Task 2 files.
+- [x] Independent task review; fix important findings before Task 3.
 
 ## Task 3: Hub controls and per-product/per-variant UI
 
@@ -74,17 +74,17 @@ Run scanning and processing advance in bounded steps without a queue daemon. Sto
 
 Pure state functions: `stockMirrorScope(type,accountKey,productId,variantId)`, `stockMirrorTargets(keys)`, `stockMirrorSummary(run)`, `stockMirrorCanContinue(run)`. API methods: `startStockMirror(payload)`, `stockMirrorRun(runId)`, `stepStockMirror(runId)`, `cancelStockMirror(runId)`.
 
-- [ ] Write Node behavior tests for valid/invalid scopes, account-specific row identity, selected targets, terminal/running state, statuses, resume without duplicate writes, and missing quantities displayed as unavailable rather than zero.
-- [ ] Run `node --test tests/marketplaceStockMirrorState.test.js`, observe missing implementation failure.
-- [ ] Implement state helpers, component and API methods; integrate all/product/variant controls and busy protection.
-- [ ] Run frontend tests and Vite build, self-review and commit Task 3 files.
-- [ ] Independent task review with frontend/backend contract; fix findings.
+- [x] Write Node behavior tests for valid/invalid scopes, account-specific row identity, selected targets, terminal/running state, statuses, resume without duplicate writes, and missing quantities displayed as unavailable rather than zero.
+- [x] Run `node --test tests/marketplaceStockMirrorState.test.js`, observe missing implementation failure.
+- [x] Implement state helpers, component and API methods; integrate all/product/variant controls and busy protection.
+- [x] Run frontend tests and Vite build, self-review and commit Task 3 files.
+- [x] Independent task review with frontend/backend contract; fix findings.
 
 ## Task 4: Whole-feature verification and local publication
 
-- [ ] Run `php vendor/bin/phpunit` from backend, `npm test` and `npm run build` from frontend, PHP lint and `git diff --check`.
-- [ ] Request whole-feature code review; fix important issues with focused tests.
-- [ ] Integrate completed branch into active local checkout without overwriting user changes. Apply only the new migration to active local database after inspecting status.
-- [ ] Copy built `index.html` and all referenced assets into active `backend/public` using native PowerShell Copy-Item.
-- [ ] Verify `/sinkronisasi-stok`, generated assets, non-mutating invalid start requests, and GET missing-run responses. Attempt browser workflow according to browser skill; report environment limitations if still unavailable.
-- [ ] Record only verified durable architecture and validation facts in project memory. Report outcome, test evidence, and lack of live inventory mutations.
+- [x] Run `php vendor/bin/phpunit` from backend, `npm test` and `npm run build` from frontend, PHP lint and `git diff --check`.
+- [x] Request whole-feature code review; fix important issues with focused tests.
+- [x] Integrate completed branch into active local checkout without overwriting user changes. Apply only the new migration to active local database after inspecting status.
+- [x] Copy built `index.html` and all referenced assets into active `backend/public` using native PowerShell Copy-Item.
+- [x] Verify `/sinkronisasi-stok`, generated assets, non-mutating invalid start requests, and GET missing-run responses. Attempt browser workflow according to browser skill; report environment limitations if still unavailable.
+- [x] Record only verified durable architecture and validation facts in project memory. Report outcome, test evidence, and lack of live inventory mutations.
