@@ -9,7 +9,7 @@
 
       <label class="account-picker">
         <span>Pilih Toko</span>
-        <select v-model="selectedKey">
+        <select v-model="selectedKey" :disabled="screenBusy">
           <option v-for="account in accounts" :key="account.key" :value="account.key">
             {{ account.name }} · {{ stockHubChannelLabel(account) }}
           </option>
@@ -19,12 +19,18 @@
 
     <p v-if="message" class="hub-message">{{ message }}</p>
 
+    <MarketplaceStockMirror ref="mirror" :account-key="selectedAccount?.key" :disabled="screenBusy" @busy="mirrorBusy = $event" @targets="mirrorTargets = $event" @completed="refreshKey++" />
+
     <component
       v-if="selectedAccount"
       :is="stockScreen"
-      :key="selectedAccount.key"
+      :key="`${selectedAccount.key}:${refreshKey}`"
       :account-key="selectedAccount.key"
       :account-name="selectedAccount.name"
+      :mirror-busy="mirrorBusy"
+      :mirror-targets="mirrorTargets"
+      @mirror-stock="mirror?.request($event)"
+      @busy="screenBusy = $event"
       unified
     />
   </section>
@@ -40,9 +46,11 @@ import {
   stockHubChannelLabel,
   stockHubViewReset
 } from './marketplaceStockHubState'
+import MarketplaceStockMirror from '@/components/MarketplaceStockMirror.vue'
 import ShopeeStock from './ShopeeStock.vue'
 import TiktokStock from './TiktokStock.vue'
 
+const mirror = ref(null), mirrorBusy = ref(false), screenBusy = ref(false), mirrorTargets = ref([]), refreshKey = ref(0)
 const accounts = ref([])
 const selectedKey = ref('')
 const message = ref('')

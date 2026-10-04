@@ -1,5 +1,5 @@
 <template>
-  <section class="page-shell" :inert="cleanupBusy">
+  <section class="page-shell" :inert="cleanupBusy || mirrorBusy">
     <header class="page-header">
       <div>
         <p>Marketplace</p>
@@ -7,12 +7,12 @@
       </div>
       <div class="header-actions">
         <button class="ghost" @click="resetFilters">Reset Filter</button>
-        <button class="bulk-sku-action" @click="openSkuRepair(null, null, true)" :disabled="loading || repairBusy || Boolean(updatingSkuKey)">Isi SKU Kosong</button>
-        <button class="bulk-sku-action" @click="openSkuRepair()" :disabled="loading || repairBusy || Boolean(updatingSkuKey)">{{ repairBusy ? 'Memproses SKU...' : 'Perbaiki SKU Semua Produk & Varian' }}</button>
+        <button class="bulk-sku-action" @click="openSkuRepair(null, null, true)" :disabled="mirrorBusy || (loading || repairBusy || Boolean(updatingSkuKey))">Isi SKU Kosong</button>
+        <button class="bulk-sku-action" @click="openSkuRepair()" :disabled="mirrorBusy || (loading || repairBusy || Boolean(updatingSkuKey))">{{ repairBusy ? 'Memproses SKU...' : 'Perbaiki SKU Semua Produk & Varian' }}</button>
         <OrphanVariantCleanup :account-key="accountKey || 'tiktok-agnishopbjm'" :account-name="accountName"
-          :disabled="loading || repairBusy || Boolean(updatingSkuKey) || Boolean(syncingProductId) || Boolean(deletingVariantKey)"
+          :disabled="mirrorBusy || (loading || repairBusy || Boolean(updatingSkuKey) || Boolean(syncingProductId) || Boolean(deletingVariantKey))"
           @busy="cleanupBusy = $event" @completed="loadData(false)" />
-        <button class="primary tiktok" @click="syncAndLoad" :disabled="loading || repairBusy">
+        <button class="primary tiktok" @click="syncAndLoad" :disabled="mirrorBusy || (loading || repairBusy)">
           {{ loading ? 'Memuat...' : 'Ambil Produk' }}
         </button>
       </div>
@@ -166,10 +166,11 @@
                 <td>
                   <div class="actions">
                     <button title="Lihat varian" @click="toggle(item.product_id)">{{ expanded[item.product_id] ? 'Hide' : 'Show' }}</button>
-                    <button title="Refresh produk ini" @click="syncProduct(item)" :disabled="syncingProductId === item.product_id">
-                      {{ syncingProductId === item.product_id ? 'Syncing...' : 'Sync' }}
+                    <button v-if="unified" :disabled="mirrorBusy || !mirrorTargets.length || loading || repairBusy || Boolean(updatingSkuKey) || Boolean(deletingVariantKey) || Boolean(syncingProductId)" @click="emit('mirror-stock', { type: 'product', view_account_key: accountKey, product_id: String(item.product_id) })">Samakan Stok Produk</button>
+                    <button title="Refresh produk ini" @click="syncProduct(item)" :disabled="mirrorBusy || (syncingProductId === item.product_id)">
+                      {{ syncingProductId === item.product_id ? 'Memuat...' : 'Refresh' }}
                     </button>
-                    <button v-if="repairRows([item]).length" @click="openSkuRepair(item)" :disabled="repairBusy || Boolean(updatingSkuKey)">Perbaiki SKU ({{ repairRows([item]).length }})</button>
+                    <button v-if="repairRows([item]).length" @click="openSkuRepair(item)" :disabled="mirrorBusy || (repairBusy || Boolean(updatingSkuKey))">Perbaiki SKU ({{ repairRows([item]).length }})</button>
                   </div>
                 </td>
               </tr>
@@ -191,7 +192,7 @@
                         <small>SKU Template</small>
                         <span class="copy-line">
                           <code>{{ templateSku(item, sku) }}</code>
-                          <button type="button" title="Copy SKU Template" @click="copyVariationCode(item, sku)" :disabled="!templateSku(item, sku)">Copy</button>
+                          <button type="button" title="Copy SKU Template" @click="copyVariationCode(item, sku)" :disabled="mirrorBusy || (!templateSku(item, sku))">Copy</button>
                         </span>
                       </span>
                       <span>SKU ID: {{ sku.sku_id || sku.tiktok_sku || '-' }}</span>
@@ -200,7 +201,8 @@
                       </span>
                       <strong>Stock {{ sku.stock_qty || 0 }}</strong>
                       <span class="variant-actions">
-                        <button v-if="tiktokRealSku(sku) !== templateSku(item, sku) || sku.sku_repair_blocked" class="update-sku-btn" @click="openSkuRepair(item, sku)" :disabled="repairBusy || Boolean(updatingSkuKey)">Perbaiki sesuai template</button>
+                        <button v-if="unified" :disabled="mirrorBusy || !mirrorTargets.length || loading || repairBusy || Boolean(updatingSkuKey) || Boolean(deletingVariantKey) || Boolean(syncingProductId)" @click="emit('mirror-stock', { type: 'variant', view_account_key: accountKey, product_id: String(item.product_id), variant_id: String(sku.sku_id || sku.tiktok_sku || '') })">Samakan Stok Varian</button>
+                        <button v-if="tiktokRealSku(sku) !== templateSku(item, sku) || sku.sku_repair_blocked" class="update-sku-btn" @click="openSkuRepair(item, sku)" :disabled="mirrorBusy || (repairBusy || Boolean(updatingSkuKey))">Perbaiki sesuai template</button>
                         <input
                           v-model.trim="manualSkuDrafts[tiktokSkuKey(item, sku)]"
                           class="manual-sku-input"
@@ -214,7 +216,7 @@
                           class="update-sku-btn"
                           title="Update SKU real TikTok dari input manual atau SKU template"
                           @click="updateMissingSku(item, sku)"
-                          :disabled="!canUpdateMissingSku(item, sku) || updatingSkuKey === tiktokSkuKey(item, sku)"
+                          :disabled="mirrorBusy || (!canUpdateMissingSku(item, sku) || updatingSkuKey === tiktokSkuKey(item, sku))"
                         >
                           {{ updatingSkuKey === tiktokSkuKey(item, sku) ? 'Updating...' : 'Update SKU' }}
                         </button>
@@ -223,7 +225,7 @@
                           class="delete-variant-btn"
                           title="Hapus varian ini dari TikTok"
                           @click="openDeleteVariantModal(item, sku)"
-                          :disabled="!canDeleteTiktokVariant(item, sku) || deletingVariantKey === tiktokSkuKey(item, sku)"
+                          :disabled="mirrorBusy || (!canDeleteTiktokVariant(item, sku) || deletingVariantKey === tiktokSkuKey(item, sku))"
                         >
                           {{ deletingVariantKey === tiktokSkuKey(item, sku) ? 'Deleting...' : 'Hapus' }}
                         </button>
@@ -241,9 +243,9 @@
         </table>
       </div>
       <div v-if="filteredItems.length" class="pagination">
-        <button type="button" :disabled="currentPage === 1" @click="setPage(currentPage - 1)">Prev</button>
+        <button type="button" :disabled="mirrorBusy || (currentPage === 1)" @click="setPage(currentPage - 1)">Prev</button>
         <span>Halaman {{ currentPage }} dari {{ totalPages }}</span>
-        <button type="button" :disabled="currentPage === totalPages" @click="setPage(currentPage + 1)">Next</button>
+        <button type="button" :disabled="mirrorBusy || (currentPage === totalPages)" @click="setPage(currentPage + 1)">Next</button>
       </div>
     </div>
 
@@ -263,8 +265,8 @@
         </div>
         <p role="status">{{ repairModal.message }}</p>
         <div class="modal-actions">
-          <button class="ghost" @click="closeSkuRepair" :disabled="repairBusy">Tutup</button>
-          <button class="bulk-sku-action" @click="submitSkuRepair" :disabled="repairBusy || !repairPending.length">{{ repairBusy ? 'Memproses...' : `Perbaiki ${repairPending.length} SKU` }}</button>
+          <button class="ghost" @click="closeSkuRepair" :disabled="mirrorBusy || (repairBusy)">Tutup</button>
+          <button class="bulk-sku-action" @click="submitSkuRepair" :disabled="mirrorBusy || (repairBusy || !repairPending.length)">{{ repairBusy ? 'Memproses...' : `Perbaiki ${repairPending.length} SKU` }}</button>
         </div>
       </section>
     </div>
@@ -297,12 +299,12 @@
         </label>
         <p v-if="deleteModal.error" class="modal-error">{{ deleteModal.error }}</p>
         <div class="modal-actions">
-          <button type="button" class="ghost" @click="closeDeleteVariantModal" :disabled="Boolean(deletingVariantKey)">Batal</button>
+          <button type="button" class="ghost" @click="closeDeleteVariantModal" :disabled="mirrorBusy || (Boolean(deletingVariantKey))">Batal</button>
           <button
             type="button"
             class="danger-action"
             @click="confirmDeleteVariant"
-            :disabled="deleteModal.confirmMappingSku !== deleteModal.mappingSku || Boolean(deletingVariantKey)"
+            :disabled="mirrorBusy || (deleteModal.confirmMappingSku !== deleteModal.mappingSku || Boolean(deletingVariantKey))"
           >
             {{ deletingVariantKey ? 'Menghapus...' : 'Hapus dari TikTok' }}
           </button>
@@ -321,9 +323,12 @@ import { tiktokTemplateSku, tiktokSkuRepairRows as repairRows } from './tiktokSk
 const props = defineProps({
   accountKey: { type: String, default: '' },
   accountName: { type: String, default: 'TikTok' },
+  mirrorBusy: { type: Boolean, default: false },
+  mirrorTargets: { type: Array, default: () => [] },
   unified: { type: Boolean, default: false }
 })
 
+const emit = defineEmits(['mirror-stock', 'busy'])
 const accountParams = () => props.accountKey ? { account_key: props.accountKey } : {}
 const cleanupBusy = ref(false)
 const repairBusy = ref(false)
@@ -333,6 +338,7 @@ let repairMounted = true
 onBeforeUnmount(() => { repairMounted = false })
 const closeSkuRepair = () => { if (!repairBusy.value) repairModal.open = false }
 const openSkuRepair = async (item = null, sku = null, emptyOnly = false) => {
+  if (props.mirrorBusy) return
   if (repairBusy.value) return
   repairBusy.value = true
   const accountKey = props.accountKey || 'tiktok-agnishopbjm'
@@ -358,6 +364,7 @@ const openSkuRepair = async (item = null, sku = null, emptyOnly = false) => {
   } finally { repairBusy.value = false }
 }
 const submitSkuRepair = async () => {
+  if (props.mirrorBusy) return
   if (repairBusy.value) return
   repairBusy.value = true
   const pending = [...repairPending.value]
@@ -550,6 +557,7 @@ const copyText = async (value) => {
 }
 const copyVariationCode = (item, sku) => copyText(variationCode(item, sku))
 const updateMissingSku = async (item, sku) => {
+  if (props.mirrorBusy) return
   if (!canUpdateMissingSku(item, sku)) return
 
   const key = tiktokSkuKey(item, sku)
@@ -578,6 +586,7 @@ const updateMissingSku = async (item, sku) => {
   }
 }
 const openDeleteVariantModal = (item, sku) => {
+  if (props.mirrorBusy) return
   if (!canDeleteTiktokVariant(item, sku)) {
     syncMessage.value = 'Varian ini tidak bisa dihapus dari tool karena SKU Mapping/SKU ID kosong atau varian terakhir.'
     syncTone.value = 'warning'
@@ -612,6 +621,7 @@ const removeDeletedVariantFromState = (productId, skuId) => {
   item.skus = (item.skus || []).filter((sku) => String(sku.sku_id || sku.tiktok_sku || '') !== String(skuId))
 }
 const confirmDeleteVariant = async () => {
+  if (props.mirrorBusy) return
   if (deleteModal.confirmMappingSku !== deleteModal.mappingSku || deletingVariantKey.value) return
 
   const key = `${deleteModal.productId}:${deleteModal.skuId}`
@@ -700,6 +710,9 @@ const setPage = (nextPage) => {
   page.value = Math.min(Math.max(Number(nextPage) || 1, 1), totalPages.value)
 }
 
+watch(() => Boolean(cleanupBusy.value || repairBusy.value || loading.value || updatingSkuKey.value || deletingVariantKey.value || syncingProductId.value), value => emit('busy', value), { flush: 'sync', immediate: true })
+onBeforeUnmount(() => emit('busy', false))
+
 const loadData = async (syncMode = false) => {
   loading.value = true
   syncMessage.value = ''
@@ -719,10 +732,12 @@ const loadData = async (syncMode = false) => {
 }
 
 const syncAndLoad = async () => {
+  if (props.mirrorBusy) return
   await loadData(true)
 }
 
 const syncProduct = async (item) => {
+  if (props.mirrorBusy) return
   syncingProductId.value = item.product_id
   syncMessage.value = ''
   try {

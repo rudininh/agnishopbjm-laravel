@@ -109,6 +109,11 @@ export const posService = {
 }
 
 export const omnichannelService = {
+  startStockMirror(payload) { return api.post('/marketplace/stock-mirror/runs', payload) },
+  stockMirrorRun(id) { return api.get(`/marketplace/stock-mirror/runs/${id}`) },
+  stepStockMirror(id) { return api.post(`/marketplace/stock-mirror/runs/${id}/step`) },
+  cancelStockMirror(id) { return api.post(`/marketplace/stock-mirror/runs/${id}/cancel`) },
+
   orphanVariantPreview(accountKey) {
     return api.post('/marketplace/orphan-variants/preview', { account_key: accountKey }, { timeout: 180000 })
   },
