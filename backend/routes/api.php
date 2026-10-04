@@ -21,6 +21,14 @@ use App\Http\Controllers\StbMappingSyncController;
 use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\OrphanVariantCleanupController;
 use App\Http\Middleware\StockCatalogMutationLock;
+use App\Http\Controllers\MarketplaceStockMirrorController;
+
+Route::prefix('marketplace/stock-mirror/runs')->group(function (): void {
+    Route::post('', [MarketplaceStockMirrorController::class, 'start']);
+    Route::get('{runId}', [MarketplaceStockMirrorController::class, 'show'])->whereUuid('runId');
+    Route::post('{runId}/step', [MarketplaceStockMirrorController::class, 'step'])->whereUuid('runId');
+    Route::post('{runId}/cancel', [MarketplaceStockMirrorController::class, 'cancel'])->whereUuid('runId');
+});
 
 Route::prefix('marketplace/orphan-variants')->group(function (): void {
     Route::post('preview', [OrphanVariantCleanupController::class, 'preview']);

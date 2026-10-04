@@ -288,7 +288,7 @@ class MarketplaceStockMirrorGateway
                     return $skip;
                 }
             }
-            if (Schema::hasTable('marketplace_listings') && DB::table('marketplace_listings')->where('account_key', $targetAccountKey)->where('remote_product_id', $c['product_id'])->where('remote_variant_id', $c['variant_id'])->where('is_active', false)->exists()) {
+            if (Schema::hasTable('marketplace_listings') && DB::table('marketplace_listings')->where('account_key', $targetAccountKey)->where('remote_product_id', $c['product_id'])->where('remote_variant_id', $c['variant_id'])->whereRaw('is_active = false')->exists()) {
                 return $skip;
             }
             $p = $this->product($targetAccountKey, $c['product_id']);
