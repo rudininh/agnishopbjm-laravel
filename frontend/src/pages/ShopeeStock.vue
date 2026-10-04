@@ -115,6 +115,7 @@
     </div>
 
     <p v-if="syncMessage" :class="['sync-message', syncTone]">{{ syncMessage }}</p>
+    <p v-if="hasDestinationPresence" class="destination-note">Ketersediaan tujuan berdasarkan katalog tersimpan. Baris kuning belum ditemukan di TikTok atau Gitashop dan ditampilkan lebih dulu, sesuai filter yang dipilih.</p>
 
     <div class="panel">
       <div class="table-wrap">
@@ -134,7 +135,7 @@
           </thead>
           <tbody>
             <template v-for="item in pagedItems" :key="item.item_id">
-              <tr :class="['product-row', { 'missing-sku-row': itemHasMissingSku(item) }]">
+              <tr :class="['product-row', { 'missing-sku-row': itemHasMissingSku(item), 'missing-destination-row': productPresenceInfo(item).missingCount > 0 }]">
                 <td class="check-col"><input type="checkbox" /></td>
                 <td>
                   <div class="product-cell">
@@ -145,6 +146,7 @@
                       <small>Item ID: {{ item.item_id }}</small>
                       <small>Sales: {{ item.sales || 0 }} | Likes: {{ item.likes || 0 }}</small>
                       <span class="store-pill">{{ item.shop_name || 'Agni Shop Banjarmasin' }}</span>
+                      <small v-if="productPresenceInfo(item).message" :class="['destination-info', { 'destination-missing': productPresenceInfo(item).missingCount > 0 }]">{{ productPresenceInfo(item).message }}</small>
                     </div>
                   </div>
                 </td>
@@ -347,6 +349,7 @@ import OrphanVariantCleanup from '@/components/OrphanVariantCleanup.vue'
 import { computed, onMounted, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { omnichannelService } from '@/services'
 import { shopeeTemplateSku, shopeeSkuRepairRows as skuRepairRows, shopeeAllSkuRepairRows } from './shopeeSkuRepairState'
+import { productPresenceInfo, compareProductPresence } from './marketplaceProductPresenceState'
 
 const props = defineProps({
   accountKey: { type: String, default: '' },
@@ -469,6 +472,7 @@ const liveCount = computed(() => items.value.filter((item) => isLive(item) && !i
 const soldOutCount = computed(() => items.value.filter((item) => isSoldOut(item)).length)
 const inactiveCount = computed(() => items.value.filter((item) => !isLive(item)).length)
 const variantCount = computed(() => items.value.reduce((sum, item) => sum + (item.models?.length || 0), 0))
+const hasDestinationPresence = computed(() => items.value.some(item => item.destination_presence))
 const grandStock = computed(() => visibleItems.value.reduce((sum, item) => sum + totalStock(item.models), 0))
 const grandValue = computed(() => visibleItems.value.reduce((sum, item) => sum + totalValue(item.models), 0))
 const storeOptions = computed(() => [...new Set(items.value.map((item) => item.shop_name || 'Agni Shop Banjarmasin'))].sort())
@@ -512,6 +516,8 @@ const filteredItems = computed(() => {
       return String(shopeeSearchHaystack(item) || '').toLowerCase().includes(query)
     })
     .sort((a, b) => {
+      const destinationDifference = compareProductPresence(a, b)
+      if (destinationDifference !== 0) return destinationDifference
       const missingGroupDifference = Number(itemHasMissingSku(b)) - Number(itemHasMissingSku(a))
       if (missingGroupDifference !== 0) return missingGroupDifference
 
@@ -935,6 +941,11 @@ thead th { position: sticky; top: 0; background: #f8fafc; color: #0f172a; z-inde
 .product-row:hover { background: #fbfdff; }
 .product-row.missing-sku-row { background: #dbeafe; box-shadow: inset 4px 0 0 #2563eb; }
 .product-row.missing-sku-row:hover { background: #bfdbfe; }
+.product-row.missing-destination-row { background: #fffbeb; box-shadow: inset 4px 0 0 #d97706; }
+.product-row.missing-destination-row:hover { background: #fef3c7; }
+.product-cell .destination-info { margin-top: 6px; color: #64748b; line-height: 1.5; }
+.product-cell .destination-missing { color: #92400e; font-weight: 700; }
+.destination-note { background: #fffbeb; border: 1px solid #fcd34d; border-radius: 6px; color: #92400e; font-size: 12px; line-height: 1.6; padding: 10px 12px; margin: 0 0 12px; }
 .product-cell { display: grid; grid-template-columns: 72px 1fr; gap: 10px; min-width: 380px; }
 .product-cell img, .thumb-fallback { width: 72px; height: 72px; border-radius: 6px; object-fit: cover; background: #eef2f7; }
 .thumb-fallback { display: grid; place-items: center; color: #64748b; font-weight: 800; }

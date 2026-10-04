@@ -2779,6 +2779,14 @@ class OmnichannelController extends Controller
             ->get()
             ->groupBy('item_id');
 
+        $destinationPresence = $this->requestedMarketplaceAccountKey === self::PRIMARY_SHOPEE_ACCOUNT_KEY
+            ? app(\App\Services\MarketplaceProductPresenceService::class)->forProducts($products->map(fn ($item) => [
+                'item_id' => (string) $item->item_id,
+                'shop_id' => (string) $item->shop_id,
+                'skus' => ($models[$item->item_id] ?? collect())->pluck('model_sku')->all(),
+            ])->all())
+            : [];
+
         $productImages = DB::table('shopee_product_image')
             ->select('item_id', 'image_url', 'created_at', 'id')
             ->whereNotNull('image_url')
@@ -2818,6 +2826,7 @@ class OmnichannelController extends Controller
                 'item_id' => (string) $item->item_id,
                 'shop_id' => $item->shop_id ? (string) $item->shop_id : null,
                 'shop_name' => $shopNames[(string) $item->shop_id] ?? 'Shopee',
+                'destination_presence' => $destinationPresence[(string) $item->item_id] ?? null,
                 'image_url' => $productImages[$item->item_id] ?? null,
                 'nama' => $item->name,
                 'sku' => (string) $item->item_id,
