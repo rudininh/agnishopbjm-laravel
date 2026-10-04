@@ -110,6 +110,7 @@ export const posService = {
 
 export const omnichannelService = {
   startStockMirror(payload) { return api.post('/marketplace/stock-mirror/runs', payload) },
+  stockMirrorActiveRun() { return api.get('/marketplace/stock-mirror/runs/active') },
   stockMirrorRun(id) { return api.get(`/marketplace/stock-mirror/runs/${id}`) },
   stepStockMirror(id) { return api.post(`/marketplace/stock-mirror/runs/${id}/step`) },
   cancelStockMirror(id) { return api.post(`/marketplace/stock-mirror/runs/${id}/cancel`) },

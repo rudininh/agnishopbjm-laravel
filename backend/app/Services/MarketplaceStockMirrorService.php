@@ -81,6 +81,16 @@ class MarketplaceStockMirrorService
         return [$canonical, $ordered];
     }
 
+    public function active(): ?array
+    {
+        $runId = DB::table('marketplace_stock_mirror_claims')->where('id', 'global')->value('active_run_id');
+        if ($runId === null) {
+            return null;
+        }
+        $run = $this->show($runId);
+        return $run['can_continue'] ? $run : null;
+    }
+
     public function show(string $runId): array
     {
         [$row, $state] = $this->load($runId);

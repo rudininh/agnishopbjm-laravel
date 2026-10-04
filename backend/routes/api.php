@@ -25,6 +25,7 @@ use App\Http\Controllers\MarketplaceStockMirrorController;
 
 Route::prefix('marketplace/stock-mirror/runs')->group(function (): void {
     Route::post('', [MarketplaceStockMirrorController::class, 'start']);
+    Route::get('active', [MarketplaceStockMirrorController::class, 'active']);
     Route::get('{runId}', [MarketplaceStockMirrorController::class, 'show'])->whereUuid('runId');
     Route::post('{runId}/step', [MarketplaceStockMirrorController::class, 'step'])->whereUuid('runId');
     Route::post('{runId}/cancel', [MarketplaceStockMirrorController::class, 'cancel'])->whereUuid('runId');

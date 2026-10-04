@@ -22,6 +22,11 @@ class MarketplaceStockMirrorController extends Controller
         return $this->respond(fn () => $this->service->start($scope, $targets, $key));
     }
 
+    public function active()
+    {
+        return $this->respond(fn () => ['run' => $this->service->active()]);
+    }
+
     public function show(string $runId)
     {
         return $this->respond(fn () => $this->service->show($runId));

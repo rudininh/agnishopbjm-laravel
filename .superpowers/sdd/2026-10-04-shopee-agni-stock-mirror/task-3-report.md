@@ -45,3 +45,31 @@ Reviewed backend Task2 API contract against endpoint paths, payload shape, direc
 Behavior tests exercise pure helpers and fake API continuations rather than mounted DOM rendering. Browser interaction/layout remains unverified because supported browser plugin connection is unavailable. Responsive styling and Vue template compile were verified by production build. Large catalog result table renders all returned rows; backend already returns the whole persisted run, so pagination can be a future improvement. Concurrent tabs are protected by backend persisted claims; frontend does not claim cross-tab coordination. Cancellation of a different tab's live step may return423 and requires explicit retry after that claim clears.
 
 Global/project memory read at start. Durable UI architecture fact recorded after tests/build; no sensitive data stored. No agents spawned. Independent parent review pending at handoff.
+
+## Fix round 1 (review base ec6780b)
+
+This section supersedes the initial extra confirmation and UUID/recovery limitations above. Implemented the three Important review findings only:
+
+- Request UUID v4 now uses crypto.getRandomValues, available on the actual HTTP local origin without randomUUID. Version/variant bits are set explicitly. Generation failures are caught and displayed; no payload or mutation is created on failure.
+- All/product/variant click directly prepares and submits the new request with currently selected destinations. Removed the extra confirmation. Existing active/in-flight/other-operation guards remain.
+- createStockMirrorStarter retains the uncertain create payload and UUID in memory. Explicit Ulangi Permintaan yang Sama resubmits the exact payload/key. New scope/target changes remain blocked until uncertainty is resolved. Only received run IDs are persisted, never payloads or keys. A 409 performs read-only active recovery and returns allow_follow:false, displaying the original run's actual scope, product/variant IDs, viewed account and destinations. It requires explicit resume/cancel before additional steps.
+
+### Contract extension
+
+New public local read-only GET /api/marketplace/stock-mirror/runs/active is registered before dynamic run ID route. Returns {run:null} when there is no active run, otherwise {run:<the existing sanitized public run representation>}. Service reads the global active_run_id and uses show; it does not create/claim/step/cancel, refresh tokens, acquire leases or call marketplaces. Unexpected storage failures use the existing sanitized503 controller response. Same public local operator policy as existing mirror routes; no credential/raw response/internal write-acceptance exposure added.
+
+Frontend stockMirrorActiveRun wraps this endpoint. Mount always performs GET-only recovery: known active ID uses GET run; missing/stale/terminal ID also checks GET active. Checking even a terminal stored ID handles a later create whose response was lost, because localStorage could still contain that previous terminal ID. Fresh starts remain blocked until mount recovery resolves; a failed lookup exposes Muat Status Tersimpan for explicit retry. No mount or 409 recovery sends mutation/continuation. Successful empty stale-ID lookup clears stale stored ID and permits a new user action. Pending create payload survives only within the mounted component; reload recovers the server's global active run with GET.
+
+### Red / green and final checks
+
+- Added five frontend regressions before implementation. node --test frontend/tests/marketplaceStockMirrorState.test.js exited1: missing stockMirrorRequestKey/createStockMirrorStarter, missing no-ID GET active path, and stale terminal run old != new. An initial test-local missing import was corrected before recording the meaningful stale-terminal red.
+- Added three fake gateway/read-only API regressions before endpoint implementation. php backend/vendor/bin/phpunit -c backend/phpunit.xml --filter api_active_recovery exited1: all3 failed404 before the static route existed.
+- After implementation: frontend14/14 focused tests pass; API3 tests/21 assertions pass. Added unavailable UUID generation and missing stored run / empty active lookup cases; total16 mirror tests.
+- Final npm --prefix frontend test: exit0, 83 tests passed, 0 failed.
+- php backend/vendor/bin/phpunit -c backend/phpunit.xml --filter MarketplaceStockMirrorTest: exit0, OK (24 tests, 131 assertions).
+- php -l service/controller/routes/feature test: all four no syntax errors.
+- git diff --check: exit0.
+- Production Vite build succeeds (158 modules); final entry hashes below. Existing >500kB chunk warning remains.
+
+Self-review covered uncertainty through failed create, same-key explicit retry, reload without any stored ID, older terminal ID, 409 returning another actual scoped run, UUID failure before mutation, read-only active lookup while a step owns its claim, no token refresh/lease/write or persisted state changes on GET, sanitized503, active guards and serialized cancellation. Fixed original panel file encoding to UTF-8 so status separators compile without replacement characters. No real inventory writes, live UI button activation, browser fallback, publication or sub-agents. Root owns full backend validation, independent re-review and publication. Supported browser remains unavailable as previously documented.
+Final build after UTF-8 correction: exit0, built in10.16s, index-BSksJVtz.js and index-CKtF9gen.css. UTF-8 panel source contains zero replacement characters.

@@ -45,3 +45,51 @@ test('cancel is serialized after an in-flight step settles',async()=>{
  stop=true;assert.deepEqual(events,['step']);finish();await processing;await api.cancelStockMirror('x')
  assert.deepEqual(events,['step','settled','cancel'])
 })
+test('HTTP-compatible UUID uses getRandomValues without randomUUID',async()=>{
+ const { stockMirrorRequestKey }=await import('../src/pages/marketplaceStockMirrorState.js')
+ const provider={getRandomValues(bytes){bytes.fill(255);return bytes}}
+ assert.equal(stockMirrorRequestKey(provider),'ffffffff-ffff-4fff-bfff-ffffffffffff')
+ assert.throws(()=>stockMirrorRequestKey({}),/Kunci permintaan/)
+ assert.throws(()=>stockMirrorRequestKey({getRandomValues(){throw Error('Unavailable')}}),/Kunci permintaan/)
+})
+test('lost create response retains payload and explicitly retries same UUID',async()=>{
+ const { createStockMirrorStarter }=await import('../src/pages/marketplaceStockMirrorState.js')
+ const payloads=[];let calls=0
+ const api={startStockMirror:async payload=>{payloads.push(structuredClone(payload));if(++calls===1)throw Error('lost response');return {data:{run_id:'created',status:'scanning',can_continue:true}}}}
+ const starter=createStockMirrorStarter(api,{getRandomValues(bytes){bytes.fill(1);return bytes}})
+ starter.prepare({type:'product',view_account_key:agni,product_id:'12'},[tik,gita])
+ await assert.rejects(starter.submit(),/lost response/)
+ assert.ok(starter.pendingPayload);assert.throws(()=>starter.prepare({type:'all',view_account_key:agni},[tik]))
+ const result=await starter.submit();assert.equal(result.data.run_id,'created');assert.equal(result.allow_follow,true)
+ assert.deepEqual(payloads[0],payloads[1]);assert.equal(starter.pendingPayload,null)
+})
+test('reload without stored ID recovers active run by GET without any mutation',async()=>{
+ const { recoverStockMirror }=await import('../src/pages/marketplaceStockMirrorState.js')
+ const original={run_id:'lost',status:'running',can_continue:true,scope:{type:'variant',view_account_key:gita,product_id:'5',variant_id:'8'},target_accounts:[tik]}
+ const calls=[];const run=await recoverStockMirror({stockMirrorActiveRun:async()=>{calls.push('GET active');return {data:{run:original}}}})
+ assert.deepEqual(run,original);assert.deepEqual(calls,['GET active'])
+})
+test('409 reads existing active run and never continues it automatically',async()=>{
+ const { createStockMirrorStarter }=await import('../src/pages/marketplaceStockMirrorState.js')
+ const calls=[];const original={run_id:'other',status:'scanning',can_continue:true,scope:{type:'all',view_account_key:gita}}
+ const starter=createStockMirrorStarter({startStockMirror:async()=>{calls.push('POST start');throw {response:{status:409,data:{message:'Aktif'}}}},stockMirrorActiveRun:async()=>{calls.push('GET active');return {data:{run:original}}}},{getRandomValues(bytes){bytes.fill(1);return bytes}})
+ starter.prepare({type:'all',view_account_key:agni},[tik]);const result=await starter.submit()
+ assert.deepEqual(result.data,original);assert.equal(result.allow_follow,false);assert.equal(starter.pendingPayload,null);assert.deepEqual(calls,['POST start','GET active'])
+})
+test('stale stored terminal ID still discovers a newer lost create',async()=>{
+ const { recoverStockMirror }=await import('../src/pages/marketplaceStockMirrorState.js')
+ const calls=[];const recovered=await recoverStockMirror({stockMirrorRun:async()=>{calls.push('GET known');return {data:{run_id:'old',status:'completed',can_continue:false}}},stockMirrorActiveRun:async()=>{calls.push('GET active');return {data:{run:{run_id:'new',status:'scanning',can_continue:true}}}}},'old')
+ assert.equal(recovered.run_id,'new');assert.deepEqual(calls,['GET known','GET active'])
+})
+test('missing stored run falls back to active lookup, empty lookup allows new action',async()=>{
+ const { recoverStockMirror }=await import('../src/pages/marketplaceStockMirrorState.js')
+ const calls=[]
+ const result=await recoverStockMirror({stockMirrorRun:async()=>{calls.push('GET invalid');throw {response:{status:404}}},stockMirrorActiveRun:async()=>{calls.push('GET active');return {data:{run:null}}}},'invalid')
+ assert.equal(result,null);assert.deepEqual(calls,['GET invalid','GET active'])
+})
+test('UUID generation failure does not retain pending payload or send a request',async()=>{
+ const { createStockMirrorStarter }=await import('../src/pages/marketplaceStockMirrorState.js')
+ let calls=0;const starter=createStockMirrorStarter({startStockMirror:async()=>{calls++}}, {})
+ assert.throws(()=>starter.prepare({type:'all',view_account_key:agni},[tik]),/Kunci permintaan/)
+ assert.equal(starter.pendingPayload,null);assert.equal(calls,0)
+})

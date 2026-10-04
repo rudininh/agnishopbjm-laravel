@@ -177,6 +177,53 @@ class MarketplaceStockMirrorTest extends TestCase
         $service->start(['type' => 'all', 'view_account_key' => MarketplaceStockMirrorGateway::SOURCE], [MarketplaceStockMirrorGateway::SOURCE], (string) Str::uuid());
     }
 
+    public function test_api_active_recovery_is_read_only_and_reports_original_scope(): void
+    {
+        [$service, $gateway, $lease] = $this->runner();
+        $this->app->instance(MarketplaceStockMirrorService::class, $service);
+        $tokens = \Mockery::mock(MarketplaceTokenRefreshService::class);
+        $tokens->shouldNotReceive('refreshDueTokens');
+        $this->app->instance(MarketplaceTokenRefreshService::class, $tokens);
+        $this->getJson('/api/marketplace/stock-mirror/runs/active')->assertOk()->assertExactJson(['run' => null]);
+        $run = $service->start(['type' => 'variant', 'view_account_key' => 'shopee-gitacollectionbjm',
+            'product_id' => '10', 'variant_id' => '11'], ['tiktok-agnishopbjm'], (string) Str::uuid());
+        $before = DB::table('marketplace_stock_mirror_runs')->where('id', $run['run_id'])->first();
+        $guard = DB::table('marketplace_stock_mirror_claims')->where('id', 'global')->first();
+        $this->getJson('/api/marketplace/stock-mirror/runs/active')->assertOk()->assertJsonPath('run', $run);
+        $this->assertEquals($before, DB::table('marketplace_stock_mirror_runs')->where('id', $run['run_id'])->first());
+        $this->assertEquals($guard, DB::table('marketplace_stock_mirror_claims')->where('id', 'global')->first());
+        $this->assertSame(0, $gateway->writes);
+        $this->assertSame(0, $lease->acquires);
+        $service->cancel($run['run_id']);
+        $this->getJson('/api/marketplace/stock-mirror/runs/active')->assertOk()->assertExactJson(['run' => null]);
+    }
+
+    public function test_api_active_recovery_reads_running_attempt_without_claim_or_write(): void
+    {
+        [$service, $gateway, $lease] = $this->runner();
+        $this->app->instance(MarketplaceStockMirrorService::class, $service);
+        $tokens = \Mockery::mock(MarketplaceTokenRefreshService::class);
+        $tokens->shouldNotReceive('refreshDueTokens');
+        $this->app->instance(MarketplaceTokenRefreshService::class, $tokens);
+        $run = $service->step($this->start($service)['run_id']);
+        DB::table('marketplace_stock_mirror_claims')->where('id', 'global')->update([
+            'owner' => (string) Str::uuid(), 'expires_at' => now()->addMinutes(10),
+        ]);
+        $this->getJson('/api/marketplace/stock-mirror/runs/active')->assertOk()->assertJsonPath('run.run_id', $run['run_id'])
+            ->assertJsonPath('run.status', 'running')->assertJsonPath('run.can_continue', true);
+        $this->assertSame(0, $gateway->writes);
+        $this->assertSame(1, $lease->acquires);
+    }
+
+    public function test_api_active_recovery_storage_error_is_sanitized(): void
+    {
+        $service = \Mockery::mock(MarketplaceStockMirrorService::class);
+        $service->shouldReceive('active')->once()->andThrow(new \RuntimeException('secret signed URL'));
+        $this->app->instance(MarketplaceStockMirrorService::class, $service);
+        $response = $this->getJson('/api/marketplace/stock-mirror/runs/active')->assertStatus(503);
+        $this->assertStringNotContainsString('secret', $response->getContent());
+    }
+
     public function test_api_validates_before_token_refresh_and_returns_sanitized_progress(): void
     {
         [$service] = $this->runner();
