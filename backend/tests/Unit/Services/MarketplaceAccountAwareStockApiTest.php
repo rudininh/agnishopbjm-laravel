@@ -108,6 +108,41 @@ class MarketplaceAccountAwareStockApiTest extends TestCase
         });
     }
 
+    public function test_inventory_endpoint_requires_explicit_model_acceptance(): void
+    {
+        Http::preventStrayRequests();
+        $accepted = ['error' => '', 'response' => ['failure_list' => [], 'success_list' => [['model_id' => 9]]]];
+        $cases = [[$accepted, 200, 'success'], [[], 500, 'error'], [$accepted, 500, 'error'],
+            [['error' => 'secret', 'response' => $accepted['response']], 200, 'error'],
+            [['error' => null, 'response' => $accepted['response']], 200, 'error'],
+            [['error' => '', 'response' => 'secret'], 200, 'error'],
+            [['error' => '', 'response' => ['success_list' => [['model_id' => 9]]]], 200, 'error'],
+            [['error' => '', 'response' => ['failure_list' => [], 'success_list' => [9]]], 200, 'error'],
+            [['response' => $accepted['response']], 200, 'error'],
+            [['error' => '', 'response' => []], 200, 'error'],
+            [['error' => '', 'response' => ['failure_list' => [['model_id' => 9, 'failed_reason' => 'secret']], 'success_list' => []]], 200, 'error'],
+            [['error' => '', 'response' => ['failure_list' => [], 'success_list' => [['model_id' => 99]]]], 200, 'error']];
+        $sequence = Http::sequence();
+        foreach ($cases as [$body, $status]) {
+            $sequence->push($body, $status);
+        }
+        Http::fake(['*' => $sequence]);
+        foreach ($cases as [$body, $status, $expected]) {
+            $result = app(MarketplaceApiService::class)->updateShopeeInventoryForAccount('shopee-gitacollectionbjm', '88', '9', 0, 'inventory-key');
+            $this->assertSame($expected, $result['status']);
+            $this->assertStringNotContainsString('secret', json_encode($result));
+            $this->assertArrayNotHasKey('response', $result);
+        }
+        Http::assertSent(function ($request): bool {
+            parse_str((string) parse_url($request->url(), PHP_URL_QUERY), $query);
+            return parse_url($request->url(), PHP_URL_PATH) === '/api/v2/product/update_stock'
+                && $query['shop_id'] === '202' && $query['access_token'] === 'gita-token'
+                && $query['partner_id'] === '22'
+                && $request->header('X-Idempotency-Key') === ['inventory-key']
+                && $request->data() === ['item_id' => 88, 'stock_list' => [['model_id' => 9, 'seller_stock' => [['stock' => 0]]]]];
+        });
+    }
+
     public function test_missing_gita_token_fails_closed_without_http(): void
     {
         DB::table('shopee_tokens')->where('account_key', 'shopee-gitacollectionbjm')->update(['is_active' => false]);

@@ -41,6 +41,64 @@ class MarketplaceStockMirrorTest extends TestCase
         return $run;
     }
 
+    public function test_target_selection_drift_blocks_both_destinations_on_resume(): void
+    {
+        foreach (['product', 'variant'] as $type) {
+            foreach ([['30', '21'], ['20', '22']] as [$product, $variant]) {
+                [$service, $gateway] = $this->runner();
+                $run = $service->start(['type' => $type, 'view_account_key' => 'shopee-gitacollectionbjm',
+                    'product_id' => '20', ...($type === 'variant' ? ['variant_id' => '21'] : [])],
+                    MarketplaceStockMirrorGateway::TARGETS, (string) Str::uuid());
+                $run = $service->step($run['run_id']);
+                $gateway->targetProduct = $product;
+                $gateway->targetVariant = $variant;
+                $run = $this->finish($service, $run);
+                $this->assertSame(0, $gateway->writes);
+                $this->assertSame(2, $run['summary']['skipped']);
+            }
+        }
+    }
+
+    public function test_target_selection_is_rechecked_before_second_destination(): void
+    {
+        [$service, $gateway] = $this->runner();
+        $run = $service->start(['type' => 'variant', 'view_account_key' => 'shopee-gitacollectionbjm',
+            'product_id' => '20', 'variant_id' => '21'], MarketplaceStockMirrorGateway::TARGETS, (string) Str::uuid());
+        $run = $service->step($run['run_id']);
+        $run = $service->step($run['run_id']);
+        $gateway->targetVariant = '22';
+        $run = $this->finish($service, $run);
+        $this->assertSame(1, $gateway->writes);
+        $this->assertSame(['success', 'skipped'], array_column($run['items'], 'status'));
+    }
+
+    public function test_source_view_can_follow_a_valid_current_mapping(): void
+    {
+        [$service, $gateway] = $this->runner();
+        $run = $this->start($service, 'variant');
+        $gateway->targetProduct = '30';
+        $gateway->targetVariant = '22';
+        $run = $this->finish($service, $run);
+        $this->assertSame(2, $gateway->writes);
+        $this->assertSame(2, $run['summary']['success']);
+        $this->assertSame(['30', '30'], array_column($run['items'], 'target_product_id'));
+    }
+
+    public function test_scope_relation_is_checked_again_after_destination_resolution(): void
+    {
+        [$service, $gateway] = $this->runner();
+        $run = $service->start(['type' => 'product', 'view_account_key' => 'shopee-gitacollectionbjm',
+            'product_id' => '20'], MarketplaceStockMirrorGateway::TARGETS, (string) Str::uuid());
+        $gateway->onTarget = function (string $account) use ($gateway): void {
+            if ($account === 'tiktok-agnishopbjm') {
+                $gateway->targetProduct = '30';
+            }
+        };
+        $run = $this->finish($service, $run);
+        $this->assertSame(0, $gateway->writes);
+        $this->assertSame(2, $run['summary']['skipped']);
+    }
+
     public function test_three_scopes_two_targets_zero_and_reload_never_replay(): void
     {
         foreach (['all', 'product', 'variant'] as $type) {
@@ -408,12 +466,15 @@ class MarketplaceStockMirrorTest extends TestCase
 
 class MirrorFakeGateway extends MarketplaceStockMirrorGateway
 {
+    public string $targetProduct = '20';
+    public string $targetVariant = '21';
     public int $writes = 0;
     public ?int $sourceStock = 0;
     public array $stocks = ['tiktok-agnishopbjm' => 5, 'shopee-gitacollectionbjm' => 5];
     public bool $pageFailure = false;
     public ?string $failTarget = null;
     public mixed $beforeWrite = null;
+    public mixed $onTarget = null;
     public ?string $noApply = null;
     public bool $cacheFailure = false;
     public ?string $rejectedWrite = null;
@@ -431,6 +492,9 @@ class MirrorFakeGateway extends MarketplaceStockMirrorGateway
 
     public function sourceSelection(string $viewAccountKey, string $productId, ?string $variantId): array
     {
+        if ($viewAccountKey !== self::SOURCE) {
+            return [['source_product_id' => '10', 'source_variant_id' => '11', 'view_product_id' => $productId, 'view_variant_id' => $variantId ?? '21']];
+        }
         if ($productId !== '10' || ($variantId !== null && $variantId !== '11')) {
             throw new \RuntimeException('secret foreign identity');
         }
@@ -443,16 +507,19 @@ class MirrorFakeGateway extends MarketplaceStockMirrorGateway
             throw new \RuntimeException('secret failed read');
         }
         return ['product_id' => $productId, 'name' => 'Product', 'complete' => true, 'active' => true,
-            'variants' => [['id' => $accountKey === self::SOURCE ? '11' : '21', 'name' => 'Red', 'seller_sku' => 'SKU',
+            'variants' => [['id' => $accountKey === self::SOURCE ? '11' : $this->targetVariant, 'name' => 'Red', 'seller_sku' => 'SKU',
                 'stock' => $accountKey === self::SOURCE ? $this->sourceStock : $this->stocks[$accountKey]]]];
     }
 
     public function target(string $sourceProductId, array $sourceVariant, string $targetAccountKey): array
     {
+        if ($this->onTarget) {
+            ($this->onTarget)($targetAccountKey);
+        }
         if ($targetAccountKey === $this->missingTarget) {
             return ['status' => 'skipped', 'product_id' => null, 'variant_id' => null, 'reason' => 'secret error'];
         }
-        return ['status' => 'ready', 'product_id' => '20', 'variant_id' => '21', 'reason' => null];
+        return ['status' => 'ready', 'product_id' => $this->targetProduct, 'variant_id' => $this->targetVariant, 'reason' => null];
     }
 
     public function write(string $accountKey, string $productId, string $variantId, int $stock, string $idempotencyKey): array

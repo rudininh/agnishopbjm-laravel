@@ -61,8 +61,8 @@ class MarketplaceStockMirrorGatewayTest extends TestCase
             if ('cursor' === $this->mode) {
                 return Http::response(['error' => '', 'response' => ['item' => [], 'has_next_page' => true]]);
             }
-            if (str_contains($r->url(), 'update_model')) {
-                return Http::response(['error' => '', 'response' => []]);
+            if (str_contains($r->url(), 'update_stock')) {
+                return Http::response(['error' => '', 'response' => ['failure_list' => [], 'success_list' => [['model_id' => 101]]]]);
             }
             if (str_contains($r->url(), 'get_item_list')) {
                 return Http::response(['error' => '', 'response' => ['item' => [['item_id' => 0 == $r['offset'] ? 10 : 20]], 'has_next_page' => 0 == $r['offset'], 'next_offset' => 50]]);
@@ -125,7 +125,7 @@ class MarketplaceStockMirrorGatewayTest extends TestCase
         $before = DB::table('stock_master')->get()->toJson();
         $r = app(MarketplaceStockMirrorGateway::class)->write('shopee-gitacollectionbjm', '20', '101', 0, 'test-key');
         $this->assertSame('success', $r['status']);
-        Http::assertSent(fn ($r) => str_contains($r->url(), 'update_model') && $r->data() === ['item_id' => 20, 'model' => [['model_id' => 101, 'normal_stock' => 0]]]);
+        Http::assertSent(fn ($r) => str_contains($r->url(), 'update_stock') && $r->data() === ['item_id' => 20, 'stock_list' => [['model_id' => 101, 'seller_stock' => [['stock' => 0]]]]]);
         $this->assertSame($before, DB::table('stock_master')->get()->toJson());
     }
 
@@ -151,7 +151,7 @@ class MarketplaceStockMirrorGatewayTest extends TestCase
         $this->links();
         $g = app(MarketplaceStockMirrorGateway::class);
         $this->assertSame(['status' => 'ready', 'product_id' => '20', 'variant_id' => '101', 'reason' => null], $g->target('10', ['id' => '101', 'seller_sku' => 'GREEN'], 'shopee-gitacollectionbjm'));
-        $this->assertSame([['source_product_id' => '10', 'source_variant_id' => '101']], $g->sourceSelection('shopee-gitacollectionbjm', '20', '101'));
+        $this->assertSame([['source_product_id' => '10', 'source_variant_id' => '101', 'view_product_id' => '20', 'view_variant_id' => '101']], $g->sourceSelection('shopee-gitacollectionbjm', '20', '101'));
         Http::assertNotSent(fn ($r) => str_contains($r->url(), 'get_item_list'));
     }
 

@@ -263,7 +263,10 @@ class MarketplaceStockMirrorService
                     }
                     $key = $item['source_product_id'].':'.$item['source_variant_id'];
                     $snapshot = ['stock' => $source['stock'], 'seller_sku' => $source['seller_sku'], 'name' => $source['name']];
-                    if (isset($state['snapshots'][$key]) && $state['snapshots'][$key] !== $snapshot) {
+                    if (! $this->selectionStillMatches($row, $state, $item, $source)) {
+                        $item['status'] = 'skipped';
+                        $item['message'] = 'Hubungan pilihan awal berubah atau tidak dapat diverifikasi. Buat proses baru.';
+                    } elseif (isset($state['snapshots'][$key]) && $state['snapshots'][$key] !== $snapshot) {
                         $item['status'] = 'skipped';
                         $item['message'] = 'Sumber berubah antar tujuan. Buat proses baru.';
                     } else {
@@ -283,6 +286,9 @@ class MarketplaceStockMirrorService
                             if (['stock' => $fresh['stock'], 'seller_sku' => $fresh['seller_sku'], 'name' => $fresh['name']] !== $snapshot) {
                                 $item['status'] = 'skipped';
                                 $item['message'] = 'Sumber berubah sebelum pengiriman. Buat proses baru.';
+                            } elseif (! $this->selectionStillMatches($row, $state, $item, $fresh)) {
+                                $item['status'] = 'skipped';
+                                $item['message'] = 'Hubungan pilihan awal berubah sebelum pengiriman. Buat proses baru.';
                             } elseif ($before['stock'] === $source['stock']) {
                                 $item['status'] = 'unchanged';
                                 $item['after_stock'] = $before['stock'];
@@ -316,6 +322,30 @@ class MarketplaceStockMirrorService
         $pending = count(array_filter($state['items'], fn ($i) => in_array($i['status'], ['pending', 'attempted'], true))) > 0;
         $state['message'] = $pending ? 'Proses berlangsung; hasil setiap tujuan disimpan.' : 'Proses selesai. Periksa hasil setiap tujuan.';
         $this->save($row->id, $pending ? 'running' : 'completed', $state, $owner);
+    }
+
+    private function selectionStillMatches(object $row, array $state, array $item, array $source): bool
+    {
+        $scope = json_decode($row->scope, true);
+        if ($scope['type'] === 'all' || $scope['view_account_key'] === MarketplaceStockMirrorGateway::SOURCE) {
+            return true;
+        }
+        $selected = array_values(array_filter($state['selection'], fn ($selection) =>
+            $selection['source_product_id'] === $item['source_product_id']
+            && $selection['source_variant_id'] === $item['source_variant_id']));
+        if (count($selected) !== 1 || ($selected[0]['view_product_id'] ?? null) !== $scope['product_id']
+            || ! isset($selected[0]['view_variant_id'])
+            || ($scope['type'] === 'variant' && $selected[0]['view_variant_id'] !== $scope['variant_id'])) {
+            return false;
+        }
+        try {
+            $target = $this->gateway->target($item['source_product_id'], $source, $scope['view_account_key']);
+            return ($target['status'] ?? '') === 'ready'
+                && $target['product_id'] === $selected[0]['view_product_id']
+                && $target['variant_id'] === $selected[0]['view_variant_id'];
+        } catch (Throwable) {
+            return false;
+        }
     }
 
     private function variant(string $account, string $productId, string $variantId): array

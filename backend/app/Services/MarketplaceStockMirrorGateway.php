@@ -344,7 +344,8 @@ class MarketplaceStockMirrorGateway
             if ($target['status'] !== 'ready' || $target['product_id'] !== $productId || $target['variant_id'] !== $selectedVariant['id']) {
                 throw new \RuntimeException('Identitas pilihan tidak cocok.');
             }
-            $matches[] = ['source_product_id' => $sourceId, 'source_variant_id' => $sourceVariantId];
+            $matches[] = ['source_product_id' => $sourceId, 'source_variant_id' => $sourceVariantId,
+                'view_product_id' => $productId, 'view_variant_id' => $selectedVariant['id']];
         }
 
         return array_values(array_unique($matches, SORT_REGULAR));
@@ -371,7 +372,7 @@ class MarketplaceStockMirrorGateway
                     throw new \RuntimeException('Identitas penulis TikTok tidak cocok.');
                 }
             }
-            $r = 'tiktok-agnishopbjm' === $accountKey ? $this->api->updateTiktokStockForAccount($accountKey, $productId, $variantId, $stock, null, $idempotencyKey) : $this->api->updateShopeeModelStockForAccount($accountKey, $productId, $variantId, $stock, $idempotencyKey);
+            $r = 'tiktok-agnishopbjm' === $accountKey ? $this->api->updateTiktokStockForAccount($accountKey, $productId, $variantId, $stock, null, $idempotencyKey) : $this->api->updateShopeeInventoryForAccount($accountKey, $productId, $variantId, $stock, $idempotencyKey);
             if (($r['status'] ?? '') !== 'success') {
                 throw new \RuntimeException();
             }

@@ -535,6 +535,40 @@ class MarketplaceApiService
         return $orderPayload;
     }
 
+    public function updateShopeeInventoryForAccount(string $accountKey, string $itemId, string $modelId, int $stock, ?string $idempotencyKey = null): array
+    {
+        $failure = ['status' => 'error', 'message' => 'Penerimaan stok Shopee tidak dapat diverifikasi.'];
+        try {
+            if ($stock < 0 || ! ctype_digit($itemId) || ! ctype_digit($modelId)) {
+                return $failure;
+            }
+            $token = $this->activeShopeeTokenForAccount($accountKey);
+            if (! $token) {
+                return $failure;
+            }
+            $response = $this->shopeeSignedPostForAccount($accountKey, (int) $token->shop_id, (string) $token->access_token,
+                '/api/v2/product/update_stock', [
+                    'item_id' => (int) $itemId,
+                    'stock_list' => [['model_id' => (int) $modelId, 'seller_stock' => [['stock' => $stock]]]],
+                ], $idempotencyKey);
+            $result = $response['response'] ?? null;
+            if (! $this->successfulShopeeResponse($response) || ($response['error'] ?? null) !== ''
+                || ! is_array($result) || ($result['failure_list'] ?? null) !== []
+                || ! is_array($result['success_list'] ?? null) || ! array_is_list($result['success_list'])
+                || count($result['success_list']) !== 1) {
+                return $failure;
+            }
+            $accepted = $result['success_list'][0];
+            if (! is_array($accepted) || ! is_scalar($accepted['model_id'] ?? null)
+                || (string) $accepted['model_id'] !== (string) (int) $modelId) {
+                return $failure;
+            }
+            return ['status' => 'success', 'message' => 'Permintaan stok Shopee diterima.'];
+        } catch (\Throwable) {
+            return $failure;
+        }
+    }
+
     public function updateShopeeModelStockForAccount(string $accountKey, string $itemId, string $modelId, int $stock, ?string $idempotencyKey = null): array
     {
         $token = $this->activeShopeeTokenForAccount($accountKey);
