@@ -7,7 +7,6 @@ use Illuminate\Support\Facades\Schema;
 
 class MarketplaceStockMirrorGateway
 {
-    private array $identityIndexes = [];
     public const SOURCE = 'shopee-agnishopbjm';
     public const TARGETS = ['tiktok-agnishopbjm', 'shopee-gitacollectionbjm'];
 
@@ -167,26 +166,6 @@ class MarketplaceStockMirrorGateway
         return 1 === count($rows) ? $this->integer($rows[0]['quantity'] ?? null) : null;
     }
 
-    private function catalog(string $key): array
-    {
-        $cursor = null;
-        $seen = [];
-        $ids = [];
-        do {
-            $page = $this->page($key, $cursor);
-            $ids = [...$ids, ...$page['products']];
-            $cursor = $page['next_cursor'];
-            if (null !== $cursor && isset($seen[$cursor])) {
-                throw new \RuntimeException('Paginasi berulang.');
-            }
-            if (null !== $cursor) {
-                $seen[$cursor] = true;
-            }
-        } while (null !== $cursor);
-
-        return array_values(array_unique($ids));
-    }
-
     private function links(string $sourceProduct, string $sourceVariant, string $targetKey): array
     {
         $links = [];
@@ -207,23 +186,65 @@ class MarketplaceStockMirrorGateway
         return array_values(array_unique($links, SORT_REGULAR));
     }
 
-    /** Candidate identity index only; stock is always re-read through product(). */
-    private function identityIndex(string $key): array
+    /** Local identities are candidates only: no cached quantity is read. */
+    private function candidates(string $key, string $sku): array
     {
-        if (isset($this->identityIndexes[$key])) {
-            return $this->identityIndexes[$key];
+        $candidates = [];
+        if ($sku === '') {
+            return [];
         }
-        $index = [];
-        foreach ($this->catalog($key) as $id) {
-            $p = $this->product($key, $id);
-            foreach ($p['variants'] as $v) {
-                if ('' !== $v['seller_sku']) {
-                    $index[$v['seller_sku']][] = ['product_id' => $id, 'variant_id' => $v['id'], 'active' => $p['active']];
-                }
+        if (Schema::hasTable('marketplace_listings')) {
+            foreach (DB::table('marketplace_listings')->where('account_key', $key)->where('seller_sku', $sku)->get() as $row) {
+                $candidates[] = ['product_id' => (string) $row->remote_product_id, 'variant_id' => (string) $row->remote_variant_id, 'active' => (bool) $row->is_active];
+            }
+        }
+        if (str_starts_with($key, 'shopee-') && Schema::hasColumn('shopee_product_model', 'model_sku')) {
+            $ctx = $this->account($key);
+            $rows = DB::table('shopee_product_model as m')->join('shopee_product as p', 'p.item_id', '=', 'm.item_id')
+                ->where('p.shop_id', $ctx['shop_id'])->where('m.model_sku', $sku)->get(['m.item_id', 'm.model_id']);
+            foreach ($rows as $row) {
+                $candidates[] = ['product_id' => (string) $row->item_id, 'variant_id' => (string) $row->model_id, 'active' => true];
+            }
+        }
+        if ($key === 'tiktok-agnishopbjm' && Schema::hasColumn('tiktok_products', 'seller_sku')) {
+            $query = DB::table('tiktok_products')->where('seller_sku', $sku);
+            if (Schema::hasColumn('tiktok_products', 'account_key')) {
+                $query->where('account_key', $key);
+            }
+            foreach ($query->get() as $row) {
+                $candidates[] = ['product_id' => (string) $row->product_id, 'variant_id' => (string) $row->sku_id, 'active' => (bool) ($row->is_active ?? true)];
+            }
+        }
+        $unique = [];
+        foreach ($candidates as $candidate) {
+            $identity = $candidate['product_id'].':'.$candidate['variant_id'];
+            if (isset($unique[$identity])) {
+                $candidate['active'] = $candidate['active'] && $unique[$identity]['active'];
+            }
+            $unique[$identity] = $candidate;
+        }
+
+        return array_values($unique);
+    }
+
+    private function sourceOwners(string $key, string $product, string $variant): array
+    {
+        $owners = [];
+        if (Schema::hasTable('marketplace_listings')) {
+            $rows = DB::table('marketplace_listings as t')->join('marketplace_listings as s', 's.stock_master_id', '=', 't.stock_master_id')
+                ->where('t.account_key', $key)->where('t.remote_product_id', $product)->where('t.remote_variant_id', $variant)
+                ->where('s.account_key', self::SOURCE)->get(['s.remote_product_id', 's.remote_variant_id']);
+            foreach ($rows as $row) {
+                $owners[] = [(string) $row->remote_product_id, (string) $row->remote_variant_id];
+            }
+        }
+        if ($key === 'tiktok-agnishopbjm' && Schema::hasTable('sku_mappings')) {
+            foreach (DB::table('sku_mappings')->where('tiktok_product_id', $product)->where('tiktok_sku_id', $variant)->get() as $row) {
+                $owners[] = [(string) $row->shopee_item_id, (string) $row->shopee_model_id];
             }
         }
 
-        return $this->identityIndexes[$key] = $index;
+        return array_values(array_unique($owners, SORT_REGULAR));
     }
 
     public function target(string $sourceProductId, array $sourceVariant, string $targetAccountKey): array
@@ -251,36 +272,32 @@ class MarketplaceStockMirrorGateway
                 if ('' === $sku) {
                     return $skip;
                 }
-                $sourceMatches = $this->identityIndex(self::SOURCE)[$sku] ?? [];
-                if (1 !== count($sourceMatches) || $sourceMatches[0]['product_id'] !== $sourceProductId || $sourceMatches[0]['variant_id'] !== (string) $sourceVariant['id']) {
+                $sourceMatches = $this->candidates(self::SOURCE, $sku);
+                if (1 !== count($sourceMatches) || ! $sourceMatches[0]['active'] || $sourceMatches[0]['product_id'] !== $sourceProductId || $sourceMatches[0]['variant_id'] !== (string) $sourceVariant['id']) {
                     return $skip;
                 }
-                $candidates = $this->identityIndex($targetAccountKey)[$sku] ?? [];
+                $candidates = $this->candidates($targetAccountKey, $sku);
             }
             if (1 !== count($candidates) || ! $candidates[0]['active']) {
                 return $skip;
             }
             $c = $candidates[0];
-            $owners = [];
-            if (Schema::hasTable('marketplace_listings')) {
-                $rows = DB::table('marketplace_listings as t')->join('marketplace_listings as s', 's.stock_master_id', '=', 't.stock_master_id')->where('t.account_key', $targetAccountKey)->where('t.remote_product_id', $c['product_id'])->where('t.remote_variant_id', $c['variant_id'])->where('s.account_key', self::SOURCE)->get(['s.remote_product_id', 's.remote_variant_id']);
-                foreach ($rows as $r) {
-                    $owners[] = [(string) $r->remote_product_id, (string) $r->remote_variant_id];
-                }
-            }
-            if ('tiktok-agnishopbjm' === $targetAccountKey && Schema::hasTable('sku_mappings')) {
-                foreach (DB::table('sku_mappings')->where('tiktok_product_id', $c['product_id'])->where('tiktok_sku_id', $c['variant_id'])->get() as $r) {
-                    $owners[] = [(string) $r->shopee_item_id, (string) $r->shopee_model_id];
-                }
-            }
+            $owners = $this->sourceOwners($targetAccountKey, $c['product_id'], $c['variant_id']);
             foreach ($owners as $owner) {
                 if ($owner !== [$sourceProductId, (string) $sourceVariant['id']]) {
                     return $skip;
                 }
             }
+            if (Schema::hasTable('marketplace_listings') && DB::table('marketplace_listings')->where('account_key', $targetAccountKey)->where('remote_product_id', $c['product_id'])->where('remote_variant_id', $c['variant_id'])->where('is_active', false)->exists()) {
+                return $skip;
+            }
             $p = $this->product($targetAccountKey, $c['product_id']);
             $v = array_values(array_filter($p['variants'], fn ($v) => $v['id'] === $c['variant_id']));
             if (! $p['complete'] || ! $p['active'] || 1 !== count($v)) {
+                return $skip;
+            }
+
+            if (! $links && $v[0]['seller_sku'] !== $sourceVariant['seller_sku']) {
                 return $skip;
             }
 
@@ -304,26 +321,33 @@ class MarketplaceStockMirrorGateway
             return array_map(fn ($v) => ['source_product_id' => $productId, 'source_variant_id' => $v['id']], $selected);
         }
         $matches = [];
-        $selectedIds = array_column($selected, 'id');
-        foreach ($this->catalog(self::SOURCE) as $sourceId) {
-            $source = $this->product(self::SOURCE, $sourceId);
-            if (! $source['active'] || ! $source['complete']) {
-                continue;
-            }
-            foreach ($source['variants'] as $v) {
-                $t = $this->target($sourceId, $v, $viewAccountKey);
-                if ('ready' === $t['status'] && $t['product_id'] === $productId && in_array($t['variant_id'], $selectedIds, true)) {
-                    $matches[] = ['source_product_id' => $sourceId, 'source_variant_id' => $v['id'], 'target_variant_id' => $t['variant_id']];
+        foreach ($selected as $selectedVariant) {
+            $owners = $this->sourceOwners($viewAccountKey, $productId, $selectedVariant['id']);
+            if (! $owners) {
+                foreach ($this->candidates(self::SOURCE, $selectedVariant['seller_sku']) as $candidate) {
+                    if (! $candidate['active']) {
+                        throw new \RuntimeException('Sumber pilihan tidak aktif.');
+                    }
+                    $owners[] = [$candidate['product_id'], $candidate['variant_id']];
                 }
             }
-        }
-        foreach ($selectedIds as $id) {
-            if (1 !== count(array_filter($matches, fn ($m) => $m['target_variant_id'] === $id))) {
+            if (count($owners) !== 1) {
                 throw new \RuntimeException('Sumber pilihan tidak tersedia atau ambigu.');
             }
+            [$sourceId, $sourceVariantId] = $owners[0];
+            $source = $this->product(self::SOURCE, $sourceId);
+            $variants = array_values(array_filter($source['variants'], fn ($variant) => $variant['id'] === $sourceVariantId));
+            if (! $source['active'] || ! $source['complete'] || count($variants) !== 1) {
+                throw new \RuntimeException('Sumber pilihan tidak valid.');
+            }
+            $target = $this->target($sourceId, $variants[0], $viewAccountKey);
+            if ($target['status'] !== 'ready' || $target['product_id'] !== $productId || $target['variant_id'] !== $selectedVariant['id']) {
+                throw new \RuntimeException('Identitas pilihan tidak cocok.');
+            }
+            $matches[] = ['source_product_id' => $sourceId, 'source_variant_id' => $sourceVariantId];
         }
 
-        return array_map(fn ($m) => ['source_product_id' => $m['source_product_id'], 'source_variant_id' => $m['source_variant_id']], $matches);
+        return array_values(array_unique($matches, SORT_REGULAR));
     }
 
     public function write(string $accountKey, string $productId, string $variantId, int $stock, string $idempotencyKey): array
@@ -335,6 +359,17 @@ class MarketplaceStockMirrorGateway
             $p = $this->product($accountKey, $productId);
             if (! $p['complete'] || ! $p['active'] || ! in_array($variantId, array_column($p['variants'], 'id'), true)) {
                 throw new \RuntimeException();
+            }
+            if ($accountKey === 'tiktok-agnishopbjm') {
+                $ctx = $this->account($accountKey);
+                $query = DB::table('tiktok_shops')->orderByDesc('updated_at');
+                if (Schema::hasColumn('tiktok_shops', 'account_key')) {
+                    $query->where('account_key', $accountKey);
+                }
+                $shop = $query->first();
+                if (! $shop || (string) $shop->shop_id !== $ctx['shop_id'] || (string) ($shop->cipher ?? $shop->shop_cipher ?? '') !== $ctx['cipher']) {
+                    throw new \RuntimeException('Identitas penulis TikTok tidak cocok.');
+                }
             }
             $r = 'tiktok-agnishopbjm' === $accountKey ? $this->api->updateTiktokStockForAccount($accountKey, $productId, $variantId, $stock, null, $idempotencyKey) : $this->api->updateShopeeModelStockForAccount($accountKey, $productId, $variantId, $stock, $idempotencyKey);
             if (($r['status'] ?? '') !== 'success') {

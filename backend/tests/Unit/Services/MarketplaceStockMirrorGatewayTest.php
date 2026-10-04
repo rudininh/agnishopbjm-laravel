@@ -16,6 +16,7 @@ class MarketplaceStockMirrorGatewayTest extends TestCase
     private array $rows = [];
     private string $status = 'NORMAL';
     private string $mode = '';
+    private bool $targetSkuDrift = false;
     private array $tiktokInventory = [['warehouse_id' => 'wh', 'quantity' => 0]];
 
     protected function setUp(): void
@@ -37,6 +38,7 @@ class MarketplaceStockMirrorGatewayTest extends TestCase
             $t->string('item_id');
             $t->string('model_id');
             $t->integer('stock');
+            $t->string('model_sku')->nullable();
             $t->timestamp('updated_at')->nullable();
         });
 
@@ -69,7 +71,12 @@ class MarketplaceStockMirrorGatewayTest extends TestCase
                 return Http::response(['error' => '', 'response' => ['item_list' => [['item_id' => (int) $r['item_id_list'], 'item_name' => 'Product', 'item_status' => $this->status, 'shop_id' => $r['shop_id']]]]]);
             }
 
-            return Http::response(['error' => '', 'response' => ['model' => $this->rows]]);
+            $rows = $this->rows;
+            if ($this->targetSkuDrift && $r['shop_id'] == 22) {
+                $rows[0]['model_sku'] = 'CHANGED';
+            }
+
+            return Http::response(['error' => '', 'response' => ['model' => $rows]]);
         });
     }
 
@@ -145,6 +152,7 @@ class MarketplaceStockMirrorGatewayTest extends TestCase
         $g = app(MarketplaceStockMirrorGateway::class);
         $this->assertSame(['status' => 'ready', 'product_id' => '20', 'variant_id' => '101', 'reason' => null], $g->target('10', ['id' => '101', 'seller_sku' => 'GREEN'], 'shopee-gitacollectionbjm'));
         $this->assertSame([['source_product_id' => '10', 'source_variant_id' => '101']], $g->sourceSelection('shopee-gitacollectionbjm', '20', '101'));
+        Http::assertNotSent(fn ($r) => str_contains($r->url(), 'get_item_list'));
     }
 
     private function links(): void
@@ -213,6 +221,7 @@ class MarketplaceStockMirrorGatewayTest extends TestCase
             $t->id();
             $t->string('shop_id');
             $t->string('cipher');
+            $t->timestamp('updated_at')->nullable();
         });
         DB::table('tiktok_tokens')->insert(['account_key' => 'tiktok-agnishopbjm', 'access_token' => 'tt-token', 'shop_id' => '33', 'expire_at' => now()->addDay(), 'is_active' => true]);
         DB::table('tiktok_shops')->insert(['shop_id' => '33', 'cipher' => 'cipher']);
@@ -234,5 +243,62 @@ class MarketplaceStockMirrorGatewayTest extends TestCase
     {
         $this->links();
         $this->assertSame('skipped', app(MarketplaceStockMirrorGateway::class)->target('10', ['id' => '101', 'seller_sku' => 'STALE'], 'shopee-gitacollectionbjm')['status']);
+    }
+
+    public function testWriterRejectsLatestShopThatDiffersFromTokenShop(): void
+    {
+        $this->tiktok();
+        DB::table('tiktok_shops')->insert(['shop_id' => '44', 'cipher' => 'foreign', 'updated_at' => now()->addMinute()]);
+        $result = app(MarketplaceStockMirrorGateway::class)->write('tiktok-agnishopbjm', '30', '301', 3, 'key');
+        $this->assertSame('error', $result['status']);
+        Http::assertNotSent(fn ($r) => str_contains($r->url(), 'inventory/update'));
+    }
+
+    private function fallbackCandidates(bool $active = true): void
+    {
+        foreach ([['shopee-agnishopbjm', '10', '101', 1], ['shopee-gitacollectionbjm', '20', '101', 2]] as [$key,$product,$variant,$master]) {
+            DB::table('marketplace_listings')->insert(['stock_master_id' => $master, 'account_key' => $key, 'channel' => 'shopee', 'remote_product_id' => $product, 'remote_variant_id' => $variant, 'remote_identity_hash' => hash('sha256', $key), 'seller_sku' => 'GREEN', 'is_active' => $key === 'shopee-agnishopbjm' || $active]);
+        }
+    }
+
+    public function testFallbackUsesLocalIdentityAndFreshStockWithoutCatalogEnumeration(): void
+    {
+        $this->fallbackCandidates();
+        $result = app(MarketplaceStockMirrorGateway::class)->target('10', ['id' => '101', 'seller_sku' => 'GREEN'], 'shopee-gitacollectionbjm');
+        $this->assertSame('ready', $result['status']);
+        Http::assertNotSent(fn ($r) => str_contains($r->url(), 'get_item_list'));
+    }
+
+    public function testInactiveIndependentTargetListingCannotBeBypassedByFallback(): void
+    {
+        $this->fallbackCandidates(false);
+        DB::table('marketplace_listings')->where('account_key', 'shopee-agnishopbjm')->delete();
+        DB::table('marketplace_listings')->where('account_key', 'shopee-gitacollectionbjm')->update(['seller_sku' => 'OLD']);
+        DB::table('shopee_product')->insert(['item_id' => '20', 'shop_id' => '22']);
+        DB::table('shopee_product_model')->insert(['item_id' => '20', 'model_id' => '101', 'stock' => 999, 'model_sku' => 'GREEN']);
+        DB::table('shopee_product')->insert(['item_id' => '10', 'shop_id' => '11']);
+        DB::table('shopee_product_model')->insert(['item_id' => '10', 'model_id' => '101', 'stock' => 999, 'model_sku' => 'GREEN']);
+        $this->assertSame('skipped', app(MarketplaceStockMirrorGateway::class)->target('10', ['id' => '101', 'seller_sku' => 'GREEN'], 'shopee-gitacollectionbjm')['status']);
+        Http::assertNotSent(fn ($r) => str_contains($r->url(), 'get_item_list'));
+    }
+
+    public function testFallbackRejectsFreshSkuDrift(): void
+    {
+        $this->fallbackCandidates();
+        $this->targetSkuDrift = true;
+        $this->assertSame('skipped', app(MarketplaceStockMirrorGateway::class)->target('10', ['id' => '101', 'seller_sku' => 'GREEN'], 'shopee-gitacollectionbjm')['status']);
+    }
+
+    public function testMissingLocalCandidateIsSkippedWithoutCatalogScan(): void
+    {
+        $this->assertSame('skipped', app(MarketplaceStockMirrorGateway::class)->target('10', ['id' => '101', 'seller_sku' => 'GREEN'], 'shopee-gitacollectionbjm')['status']);
+        Http::assertNotSent(fn ($r) => str_contains($r->url(), 'get_item_list'));
+    }
+
+    public function testFallbackRejectsInactiveSourceCandidate(): void
+    {
+        $this->fallbackCandidates();
+        DB::table('marketplace_listings')->where('account_key', 'shopee-agnishopbjm')->update(['is_active' => false]);
+        $this->assertSame('skipped', app(MarketplaceStockMirrorGateway::class)->target('10', ['id' => '101', 'seller_sku' => 'GREEN'], 'shopee-gitacollectionbjm')['status']);
     }
 }
