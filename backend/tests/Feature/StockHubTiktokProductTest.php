@@ -308,4 +308,3 @@ class StockHubTiktokProductTest extends TestCase
         $this->assertSame(0, $this->creates);
     }
 }
-
