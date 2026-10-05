@@ -16,7 +16,7 @@ class MarketplaceStockMirrorTransport
     {
     }
 
-    public function context(string $accountKey): array
+    public function context(string $accountKey, bool $requireWarehouse = true, int $timeout = 30): array
     {
         $account = $this->accounts->account($accountKey);
         if (! ($account['enabled'] ?? false)) {
@@ -44,7 +44,7 @@ class MarketplaceStockMirrorTransport
             return $this->contexts[$accountKey] = ['config' => $this->accounts->shopeeContext($accountKey), 'token' => $token->access_token, 'shop_id' => (string) $token->shop_id];
         }
         $tokenShopId = trim((string) ($token->shop_id ?? ''));
-        $config = $this->accounts->tiktokContext($accountKey);
+        $config = $this->accounts->tiktokContext($accountKey, $requireWarehouse);
         if ($tokens->pluck('shop_id')->filter()->unique()->count() > 1) {
             throw new \RuntimeException('Identitas toko pada token TikTok belum jelas.');
         }
@@ -54,7 +54,7 @@ class MarketplaceStockMirrorTransport
                 ['config' => $config, 'token' => $token->access_token, 'cipher' => ''],
                 false,
                 'GET',
-                '/authorization/202309/shops'
+                '/authorization/202309/shops', [], null, false, $timeout
             );
             $authorizedShops = $authorized['shops'] ?? [];
             if (! is_array($authorizedShops) || 1 !== count($authorizedShops) || ! is_array($authorizedShops[0] ?? null)) {
@@ -87,12 +87,39 @@ class MarketplaceStockMirrorTransport
         return $this->contexts[$accountKey] = ['config' => $config, 'token' => $token->access_token, 'shop_id' => $id, 'cipher' => $cipher];
     }
 
-    public function call(string $accountKey, string $method, string $path, array $query = [], ?array $body = null): array
+    public function call(string $accountKey, string $method, string $path, array $query = [], ?array $body = null, int $timeout = 30, bool $requireWarehouse = true): array
     {
-        return $this->request($this->context($accountKey), str_starts_with($accountKey, 'shopee-'), $method, $path, $query, $body);
+        return $this->request($this->context($accountKey, $requireWarehouse, $timeout), str_starts_with($accountKey, 'shopee-'), $method, $path, $query, $body, false, $timeout);
     }
 
-    private function request(array $context, bool $shopee, string $method, string $path, array $query = [], ?array $body = null): array
+    public function createTiktokProduct(array $body): array
+    {
+        return $this->request($this->context('tiktok-agnishopbjm', false, 6), false, 'POST', '/product/202309/products', [], $body, true, 8);
+    }
+
+    public function uploadTiktokImage(string $bytes, string $useCase): string
+    {
+        $context = $this->context('tiktok-agnishopbjm', false, 6);
+        $config = $context['config'];
+        $path = '/product/202309/images/upload';
+        $query = ['app_key' => $config['app_key'], 'shop_cipher' => $context['cipher'], 'timestamp' => time()];
+        ksort($query);
+        $base = $config['app_secret'].$path;
+        foreach ($query as $key => $value) { $base .= $key.$value; }
+        // TikTok multipart signatures exclude the multipart body.
+        $query['sign'] = hash_hmac('sha256', $base.$config['app_secret'], $config['app_secret']);
+        try {
+            $response = Http::timeout(12)->withHeaders(['x-tts-access-token' => $context['token']])
+                ->attach('data', $bytes, 'product.jpg')->post(rtrim($config['api_host'], '/').$path.'?'.http_build_query($query), ['use_case' => $useCase]);
+            $json = $response->json();
+            if (! $response->successful() || (string) ($json['code'] ?? '') !== '0' || ! is_string($json['data']['uri'] ?? null) || $json['data']['uri'] === '') { throw new \RuntimeException(); }
+            return $json['data']['uri'];
+        } catch (\Throwable) {
+            throw new \RuntimeException('Upload gambar TikTok gagal.');
+        }
+    }
+
+    private function request(array $context, bool $shopee, string $method, string $path, array $query = [], ?array $body = null, bool $creation = false, int $timeout = 30): array
     {
         $config = $context['config'];
         $timestamp = time();
@@ -115,13 +142,18 @@ class MarketplaceStockMirrorTransport
             $host = $config['api_host'];
         }
         try {
-            $request = Http::timeout(30)->acceptJson();
+            $request = Http::timeout($timeout)->acceptJson();
             if (! $shopee) {
                 $request = $request->withHeaders(['x-tts-access-token' => $context['token']]);
             }
             $url = rtrim($host, '/').$path.'?'.http_build_query($query, '', '&', PHP_QUERY_RFC3986);
             $response = 'GET' === $method ? $request->get($url) : $request->withBody(json_encode($body ?? [], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE), 'application/json')->post($url);
             $json = json_decode($response->body(), true, 512, JSON_BIGINT_AS_STRING);
+            $errorCode = is_array($json) ? filter_var($json['code'] ?? null, FILTER_VALIDATE_INT) : false;
+            $returnedIdentity = is_array($json) && (! empty($json['data']['product_id']) || ! empty($json['data']['id']));
+            if ($creation && $response->status() < 500 && $errorCode !== false && $errorCode !== 0 && ! $returnedIdentity) {
+                throw new StockHubTiktokProductRejected('TikTok menolak produk (kode '.(int) $json['code'].'). Periksa kategori, atribut, dan data produk.');
+            }
             $ok = $response->successful() && is_array($json) && ($shopee
                 ? array_key_exists('error', $json) && '' === $json['error']
                 : isset($json['code']) && '0' === (string) $json['code']);
@@ -130,6 +162,8 @@ class MarketplaceStockMirrorTransport
             }
 
             return $json[$shopee ? 'response' : 'data'];
+        } catch (StockHubTiktokProductRejected $e) {
+            throw $e;
         } catch (\Throwable) {
             // Never expose a client exception: its URL contains signed credentials.
             throw new \RuntimeException('Marketplace gagal atau respons tidak lengkap. Segarkan token/katalog dan periksa kembali.');

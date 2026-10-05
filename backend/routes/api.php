@@ -22,6 +22,15 @@ use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\OrphanVariantCleanupController;
 use App\Http\Middleware\StockCatalogMutationLock;
 use App\Http\Controllers\MarketplaceStockMirrorController;
+use App\Http\Controllers\StockHubTiktokProductController;
+
+Route::prefix('marketplace/tiktok-product-creation')->group(function (): void {
+    Route::get('categories', [StockHubTiktokProductController::class, 'categories']);
+    Route::post('runs', [StockHubTiktokProductController::class, 'start']);
+    Route::get('source/{productId}', [StockHubTiktokProductController::class, 'source'])->whereNumber('productId');
+    Route::get('runs/{runId}', [StockHubTiktokProductController::class, 'show'])->whereUuid('runId');
+    Route::post('runs/{runId}/step', [StockHubTiktokProductController::class, 'step'])->whereUuid('runId');
+});
 
 Route::prefix('marketplace/stock-mirror/runs')->group(function (): void {
     Route::post('', [MarketplaceStockMirrorController::class, 'start']);

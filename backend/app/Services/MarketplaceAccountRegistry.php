@@ -105,7 +105,7 @@ class MarketplaceAccountRegistry
     /**
      * @return array{app_key:string, app_secret:string, auth_host:string, api_host:string, redirect_url:string, warehouse_id:string}
      */
-    public function tiktokContext(string $accountKey): array
+    public function tiktokContext(string $accountKey, bool $requireWarehouse = true): array
     {
         $account = $this->requireChannel($accountKey, 'tiktok');
         $credentials = $account['credentials'] ?? [];
@@ -118,7 +118,8 @@ class MarketplaceAccountRegistry
             'warehouse_id' => trim((string) ($credentials['warehouse_id'] ?? '')),
         ];
 
-        if (in_array('', $context, true)) {
+        $required = $requireWarehouse ? $context : array_diff_key($context, ['warehouse_id' => true]);
+        if (in_array('', $required, true)) {
             throw new RuntimeException('Konfigurasi '.$this->accountName($account).' belum lengkap.');
         }
 
