@@ -97,6 +97,17 @@ class MarketplaceStockMirrorTransport
         return $this->request($this->context('tiktok-agnishopbjm', false, 6), false, 'POST', '/product/202309/products', [], $body, true, 8);
     }
 
+    public function prepareTiktokProductCreation(string $expectedShopId): \Closure
+    {
+        $context = $this->context('tiktok-agnishopbjm', false, 6);
+        if ($context['shop_id'] !== $expectedShopId) {
+            throw new \DomainException('Akun toko TikTok berubah sebelum pengiriman. Periksa akun dan coba kembali.');
+        }
+
+        // Keep validated signing credentials only in memory; do not resolve another shop after the attempt marker.
+        return fn (array $body): array => $this->request($context, false, 'POST', '/product/202309/products', [], $body, true, 8);
+    }
+
     public function uploadTiktokImage(string $bytes, string $useCase): string
     {
         $context = $this->context('tiktok-agnishopbjm', false, 6);

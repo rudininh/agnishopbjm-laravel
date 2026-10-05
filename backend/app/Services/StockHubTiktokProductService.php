@@ -11,7 +11,11 @@ class StockHubTiktokProductService
     private const GUARDS = 'stock_hub_tiktok_product_guards';
     private const RUNNING = ['preparing','scanning','uploading','submitting','verifying'];
 
-    public function __construct(private StockHubTiktokProductGateway $gateway, private MarketplaceStockMirrorLease $lease) {}
+    public function __construct(
+        private StockHubTiktokProductGateway $gateway,
+        private MarketplaceStockMirrorLease $lease,
+        private MarketplaceCatalogMutationRevision $catalogRevision,
+    ) {}
 
     public function start(string $product, string $key, array $context): array
     {
@@ -20,11 +24,18 @@ class StockHubTiktokProductService
             DB::table(self::GUARDS)->insertOrIgnore(['source_product_id' => $product]);
             $guard = DB::table(self::GUARDS)->where('source_product_id', $product)->lockForUpdate()->first();
             $repeat = DB::table(self::TABLE)->where('request_key', $key)->first();
-            if ($repeat) { abort_unless($repeat->request_hash === $hash, 409, 'Request key sudah digunakan untuk input berbeda.'); return $repeat->id; }
+            if ($repeat) {
+                abort_unless($repeat->request_hash === $hash, 409, 'Request key sudah digunakan untuk input berbeda.');
+                return $repeat->id;
+            }
             if ($guard->run_id) {
                 $current = DB::table(self::TABLE)->where('id', $guard->run_id)->first();
-                if ($current && ! in_array($current->status, ['blocked','rejected'], true)) { return $current->id; }
-                if ($guard->owner && $guard->expires_at > now()->toDateTimeString()) { return $guard->run_id; }
+                if ($current && ! in_array($current->status, ['blocked','rejected'], true)) {
+                    return $current->id;
+                }
+                if ($guard->owner && $guard->expires_at > now()->toDateTimeString()) {
+                    return $guard->run_id;
+                }
             }
             $id = (string) Str::uuid();
             $state = ['stage' => 'preparing', 'prepare' => 'source', 'message' => 'Menyiapkan produk Shopee Agni.', 'context' => $context, 'required_fields' => [], 'progress' => ['scanned_products' => 0, 'uploaded_images' => 0, 'total_images' => 0], 'result' => null];
@@ -84,12 +95,16 @@ class StockHubTiktokProductService
                 $fresh = $this->gateway->source($row->source_product_id);
                 if ($fresh !== $state['source']) { throw new \DomainException('Produk sumber berubah selama proses. Periksa data dan coba kembali.'); }
                 if ($this->gateway->linked($row->source_product_id)) { $this->save($id, 'exists', $state, 'Produk sudah memiliki relasi TikTok.'); return $this->show($id); }
-                if ($this->attempts() !== $state['scan_attempts']) { throw new \DomainException('Katalog tujuan berubah selama pemindaian. Ulangi pemeriksaan produk.'); }
+                if ($this->catalogRevision->current() !== ($state['scan_revision'] ?? null)
+                    || $this->attempts() !== $state['scan_attempts']) {
+                    throw new \DomainException('Katalog tujuan berubah selama pemindaian. Ulangi pemeriksaan produk.');
+                }
                 $this->lease->renew();
+                $submit = $this->gateway->prepareCreate($state['target_shop_id']);
                 // This durable marker is never cleared, including after explicit rejection.
                 DB::table(self::TABLE)->where('id', $id)->whereNull('attempted_at')->update(['attempted_at' => now(), 'updated_at' => now()]);
                 try {
-                    $result = $this->gateway->create($state['payload']);
+                    $result = $submit($state['payload']);
                 } catch (StockHubTiktokProductRejected $e) {
                     $this->save($id, 'rejected', $state, $e->getMessage());
                     return $this->show($id);
@@ -136,6 +151,7 @@ class StockHubTiktokProductService
             $this->gateway->validateWarehouse($state['context']['warehouse_id']);
             $state['scan'] = ['cursor' => null, 'cursors' => [], 'seen' => [], 'queue' => [], 'complete' => false, 'total' => null];
             $state['scan_attempts'] = $this->attempts();
+            $state['scan_revision'] = $this->catalogRevision->current();
             $this->save($row->id, 'scanning', $state, 'Memeriksa seluruh katalog TikTok, termasuk produk tidak aktif.');
             return;
         }
@@ -198,7 +214,26 @@ class StockHubTiktokProductService
     {
         $s = json_decode($row->state, true, 512, JSON_THROW_ON_ERROR);
         $status = $row->status;
-        if ($row->attempted_at && ! $row->remote_product_id && $status !== 'rejected') { $status = 'submitted_unverified'; }
-        return ['run_id' => $row->id, 'source_product_id' => $row->source_product_id, 'status' => $status, 'stage' => $status, 'message' => $status === 'submitted_unverified' && $row->status !== $status ? 'Terkirim, belum terverifikasi. Periksa Seller Center sebelum tindakan lain.' : ($s['message'] ?? ''), 'can_continue' => in_array($status, self::RUNNING, true), 'can_retry' => in_array($status, ['blocked','rejected'], true), 'remote_product_id' => $row->remote_product_id, 'variant_count' => count($s['source']['variants'] ?? []), 'progress' => $s['progress'] ?? ['scanned_products' => 0, 'uploaded_images' => 0, 'total_images' => 0], 'required_fields' => $s['required_fields'] ?? [], 'context' => $s['context'] ?? [], 'result' => $s['result'] ?? null];
+        if ($row->attempted_at && ! $row->remote_product_id && $status !== 'rejected') {
+            $status = 'submitted_unverified';
+        }
+
+        return [
+            'run_id' => $row->id,
+            'source_product_id' => $row->source_product_id,
+            'status' => $status,
+            'stage' => $status,
+            'message' => $status === 'submitted_unverified' && $row->status !== $status
+                ? 'Terkirim, belum terverifikasi. Periksa Seller Center sebelum tindakan lain.'
+                : ($s['message'] ?? ''),
+            'can_continue' => in_array($status, self::RUNNING, true),
+            'can_retry' => in_array($status, ['blocked','rejected'], true),
+            'remote_product_id' => $row->remote_product_id,
+            'variant_count' => count($s['source']['variants'] ?? []),
+            'progress' => $s['progress'] ?? ['scanned_products' => 0, 'uploaded_images' => 0, 'total_images' => 0],
+            'required_fields' => $s['required_fields'] ?? [],
+            'context' => $s['context'] ?? [],
+            'result' => $s['result'] ?? null,
+        ];
     }
 }

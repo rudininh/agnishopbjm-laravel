@@ -3,11 +3,18 @@
 use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Schema;
+use Illuminate\Support\Facades\DB;
 
 return new class extends Migration
 {
     public function up(): void
     {
+        Schema::create('marketplace_catalog_mutation_revision', function (Blueprint $t): void {
+            $t->unsignedTinyInteger('id')->primary();
+            $t->unsignedBigInteger('revision')->default(0);
+        });
+        DB::table('marketplace_catalog_mutation_revision')->insert(['id' => 1, 'revision' => 0]);
+
         Schema::create('stock_hub_tiktok_product_runs', function (Blueprint $t): void {
             $t->uuid('id')->primary(); $t->uuid('request_key')->unique(); $t->string('request_hash', 64);
             $t->string('source_product_id', 64)->index(); $t->string('source_account')->default('shopee-agnishopbjm');
@@ -23,5 +30,6 @@ return new class extends Migration
     public function down(): void
     {
         Schema::dropIfExists('stock_hub_tiktok_product_guards'); Schema::dropIfExists('stock_hub_tiktok_product_runs');
+        Schema::dropIfExists('marketplace_catalog_mutation_revision');
     }
 };

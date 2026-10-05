@@ -8,6 +8,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Schema;
+use Illuminate\Support\Facades\Route;
 use Illuminate\Support\Str;
 use Tests\TestCase;
 
@@ -26,9 +27,9 @@ class StockHubTiktokProductTest extends TestCase
         Http::preventStrayRequests();
         config(['shopee_mass_upload.stb_control_url' => '', 'marketplace_accounts.accounts.shopee-agnishopbjm' => ['enabled' => true, 'channel' => 'shopee', 'credentials' => ['partner_id' => 123, 'partner_key' => 'test-secret', 'host' => 'https://shop.test', 'redirect_url' => 'https://local.test']], 'marketplace_accounts.accounts.tiktok-agnishopbjm' => ['enabled' => true, 'channel' => 'tiktok', 'credentials' => ['app_key' => 'app', 'app_secret' => 'secret', 'api_host' => 'https://tt.test', 'auth_host' => 'https://tt.test', 'redirect_url' => 'https://local.test', 'warehouse_id' => 'wh']]]);
         DB::table('shopee_tokens')->insert(['account_key' => 'shopee-agnishopbjm', 'shop_id' => 11, 'access_token' => 'shopee-secret', 'is_active' => true, 'access_token_expire_at' => now()->addHour()]);
-        Schema::create('tiktok_tokens', function (Blueprint $t) { $t->id(); $t->string('account_key'); $t->string('shop_id'); $t->string('access_token'); $t->boolean('is_active'); $t->timestamp('access_token_expire_at'); });
+        Schema::create('tiktok_tokens', function (Blueprint $t) { $t->id(); $t->string('account_key'); $t->string('shop_id'); $t->string('access_token'); $t->boolean('is_active'); $t->timestamp('access_token_expire_at'); $t->timestamps(); });
         DB::table('tiktok_tokens')->insert(['account_key' => 'tiktok-agnishopbjm', 'shop_id' => '33', 'access_token' => 'tiktok-secret', 'is_active' => true, 'access_token_expire_at' => now()->addHour()]);
-        Schema::create('tiktok_shops', function (Blueprint $t) { $t->id(); $t->string('shop_id'); $t->string('cipher'); });
+        Schema::create('tiktok_shops', function (Blueprint $t) { $t->id(); $t->string('shop_id'); $t->string('cipher'); $t->timestamps(); });
         DB::table('tiktok_shops')->insert(['shop_id' => '33', 'cipher' => 'cipher-secret']);
         Schema::create('stock_master', function (Blueprint $t) { $t->id(); $t->integer('stock'); });
         DB::table('stock_master')->insert(['stock' => 19]);
@@ -39,8 +40,16 @@ class StockHubTiktokProductTest extends TestCase
         DB::table('marketplace_listings')->insert(['stock_master_id' => 1, 'account_key' => 'shopee-agnishopbjm', 'channel' => 'shopee', 'remote_product_id' => '10', 'remote_variant_id' => '101', 'remote_identity_hash' => hash('sha256', 'source'), 'seller_sku' => 'INT-10-GREEN']);
         Http::fake(function ($r) {
             $path = parse_url($r->url(), PHP_URL_PATH);
+            if ($path === '/product/202509/products/90/partial_edit') {
+                $this->assertSame('INT-10-GREEN', $r['skus'][0]['seller_sku']);
+                throw new \Illuminate\Http\Client\ConnectionException('Outcome unknown after remote SKU edit');
+            }
             if (str_contains($r->url(), 'img.test')) { return Http::response($this->mode === 'image' ? '' : 'image-bytes', $this->mode === 'image' ? 404 : 200, ['Content-Type' => 'image/jpeg']); }
             if (str_contains($path, 'get_item_base_info')) {
+                if ($this->mode === 'relink_during_submit') {
+                    DB::table('tiktok_tokens')->update(['shop_id' => '44']);
+                    DB::table('tiktok_shops')->update(['shop_id' => '44', 'cipher' => 'changed-shop-cipher']);
+                }
                 $item = ['item_id' => 10, 'shop_id' => $this->mode === 'wrong_shop' ? 22 : 11, 'item_status' => 'NORMAL', 'has_model' => true, 'item_name' => 'Full product', 'description' => 'Original description', 'weight' => '0.5', 'dimension' => ['package_length' => 10, 'package_width' => 20, 'package_height' => 3], 'image' => ['image_url_list' => ['https://img.test/main.jpg']]];
                 if ($this->mode === 'dimensions') { $item['weight'] = '0.08'; $item['dimension'] = ['package_length' => 0, 'package_width' => 0, 'package_height' => 0]; }
                 if ($this->mode === 'description') { unset($item['description']); }
@@ -243,6 +252,10 @@ class StockHubTiktokProductTest extends TestCase
         $this->assertContains('warehouse_id', array_column($run['required_fields'], 'key'));
         $run = $this->finish($this->start(['category_id' => '600', 'warehouse_id' => 'wh']));
         $this->assertSame('success', $run['status'], $run['message']);
+        $this->assertSame('wh', DB::table('marketplace_listings')->where('account_key', 'tiktok-agnishopbjm')->value('warehouse_id'));
+        $readiness = collect(app(\App\Services\MarketplaceAccountReadinessService::class)->all())->firstWhere('key', 'tiktok-agnishopbjm');
+        $this->assertSame('ready', $readiness['state']);
+        $this->assertTrue($readiness['checks']['warehouse']);
     }
 
     public function test_all_catalog_statuses_are_scanned_with_primary_account_signed_tokens(): void
@@ -270,6 +283,71 @@ class StockHubTiktokProductTest extends TestCase
         $run = $this->finish($this->start());
         $state = json_decode(DB::table('stock_hub_tiktok_product_runs')->where('id', $run['run_id'])->value('state'), true);
         $this->assertSame(['201','202'], $state['accepted_sku_ids'] ?? []);
+    }
+
+    public function test_intervening_locked_remote_sku_edit_invalidates_scan_even_when_ambiguous_and_cache_unchanged(): void
+    {
+        $run = $this->start();
+        while ($run['stage'] !== 'submitting' && $run['can_continue']) {
+            $run = $this->postJson($this->base.'/runs/'.$run['run_id'].'/step')->assertOk()->json('data');
+        }
+        DB::table('tiktok_products')->insert(['product_id' => '90', 'sku_id' => '901', 'seller_sku' => 'OTHER']);
+        Route::post('/test-legacy-sku-edit', function () {
+            try {
+                Http::post('https://legacy-edit.test/product/202509/products/90/partial_edit', ['skus' => [['id' => '901', 'seller_sku' => 'INT-10-GREEN']]]);
+            } catch (\Illuminate\Http\Client\ConnectionException) {
+                return response()->json(['status' => 'submitted_unverified']);
+            }
+        })->middleware(\App\Http\Middleware\StockCatalogMutationLock::class);
+        $this->postJson('/test-legacy-sku-edit')->assertOk()->assertJsonPath('status', 'submitted_unverified');
+        Cache::flush();
+        $this->assertSame('OTHER', DB::table('tiktok_products')->where('product_id', '90')->value('seller_sku'));
+        $run = $this->finish($run);
+        $this->assertSame('blocked', $run['status']);
+        $this->assertStringContainsString('Katalog', $run['message']);
+        $this->assertSame(0, $this->creates);
+        $this->assertNull(DB::table('stock_hub_tiktok_product_runs')->value('attempted_at'));
+    }
+
+    public function test_verification_does_not_overwrite_a_conflicting_listing_warehouse(): void
+    {
+        $run = $this->start();
+        while ($run['stage'] !== 'verifying' && $run['can_continue']) {
+            $run = $this->postJson($this->base.'/runs/'.$run['run_id'].'/step')->assertOk()->json('data');
+        }
+        DB::table('marketplace_listings')->insert(['stock_master_id' => 1, 'account_key' => 'tiktok-agnishopbjm', 'channel' => 'tiktok', 'remote_product_id' => '999', 'remote_variant_id' => '998', 'remote_identity_hash' => hash('sha256', 'conflicting'), 'seller_sku' => 'CURATED', 'warehouse_id' => 'curated-warehouse']);
+        $run = $this->finish($run);
+        $this->assertSame('success', $run['status']);
+        $listing = DB::table('marketplace_listings')->where('account_key', 'tiktok-agnishopbjm')->sole();
+        $this->assertSame('999', $listing->remote_product_id);
+        $this->assertSame('curated-warehouse', $listing->warehouse_id);
+    }
+
+    public function test_creation_fails_closed_when_durable_scan_revision_is_lost(): void
+    {
+        $run = $this->start();
+        while ($run['stage'] !== 'submitting' && $run['can_continue']) {
+            $run = $this->postJson($this->base.'/runs/'.$run['run_id'].'/step')->assertOk()->json('data');
+        }
+        DB::table('marketplace_catalog_mutation_revision')->delete();
+        $run = $this->finish($run);
+        $this->assertSame('blocked', $run['status']);
+        $this->assertSame(0, $this->creates);
+        $this->assertNull(DB::table('stock_hub_tiktok_product_runs')->value('attempted_at'));
+    }
+
+    public function test_target_relink_during_source_revalidation_blocks_before_attempt_marker_or_create(): void
+    {
+        $run = $this->start();
+        while ($run['stage'] !== 'submitting' && $run['can_continue']) {
+            $run = $this->postJson($this->base.'/runs/'.$run['run_id'].'/step')->assertOk()->json('data');
+        }
+        $this->mode = 'relink_during_submit';
+        $run = $this->finish($run);
+        $this->assertSame('blocked', $run['status']);
+        $this->assertSame(0, $this->creates);
+        $this->assertNull(DB::table('stock_hub_tiktok_product_runs')->value('attempted_at'));
+        Http::assertNotSent(fn ($r) => str_contains($r->url(), 'changed-shop-cipher'));
     }
 
     public function test_uncertain_submission_never_replays_and_get_is_read_only(): void

@@ -190,7 +190,10 @@ class StockHubTiktokProductGateway
         return ['title' => $source['title'], 'description' => $source['description'], 'category_id' => $context['category_id'], 'package_weight' => $context['package_weight'], 'package_dimensions' => $context['package_dimensions'], 'main_images' => array_map(fn ($url) => ['uri' => $uri($url, 'MAIN_IMAGE')], $source['main_images']), 'skus' => $skus];
     }
 
-    public function create(array $payload): array { return $this->transport->createTiktokProduct($payload); }
+    public function prepareCreate(string $expectedShopId): \Closure
+    {
+        return $this->transport->prepareTiktokProductCreation($expectedShopId);
+    }
 
     public function verify(array $source, array $context, string $id): array
     {
@@ -227,7 +230,19 @@ class StockHubTiktokProductGateway
                 $hash = hash('sha256', json_encode(['tiktok', (string) $p['id'], $r['id']], JSON_THROW_ON_ERROR));
                 $conflict = DB::table('marketplace_listings')->where('account_key', self::TARGET)->where(fn ($q) => $q->where('stock_master_id', $owners[0]->stock_master_id)->orWhere('remote_identity_hash', $hash))->exists();
                 if (! $conflict) {
-                    DB::table('marketplace_listings')->insertOrIgnore(['stock_master_id' => $owners[0]->stock_master_id, 'account_key' => self::TARGET, 'channel' => 'tiktok', 'remote_product_id' => (string) $p['id'], 'remote_variant_id' => $r['id'], 'remote_identity_hash' => $hash, 'seller_sku' => $v['seller_sku'], 'is_active' => $published, 'created_at' => now(), 'updated_at' => now()]);
+                    DB::table('marketplace_listings')->insertOrIgnore([
+                        'stock_master_id' => $owners[0]->stock_master_id,
+                        'account_key' => self::TARGET,
+                        'channel' => 'tiktok',
+                        'remote_product_id' => (string) $p['id'],
+                        'remote_variant_id' => $r['id'],
+                        'remote_identity_hash' => $hash,
+                        'seller_sku' => $v['seller_sku'],
+                        'warehouse_id' => $context['warehouse_id'],
+                        'is_active' => $published,
+                        'created_at' => now(),
+                        'updated_at' => now(),
+                    ]);
                 }
             }
         });
