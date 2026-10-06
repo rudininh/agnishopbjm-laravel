@@ -32,17 +32,21 @@ No new restart endpoint, status, browser flow or cross-run asset cache is needed
 - Modify: `backend/app/Services/StockHubTiktokProductService.php` (failed uploading-stage image number).
 - Test: `backend/tests/Feature/StockHubTiktokProductTest.php` (actual HTTP-fake workflow).
 
-- [ ] Write failing HTTP-boundary tests: source GET connection/502 then success; asset POST connection/502 then success; maximum three attempts when failure persists. Assert one product create after recovery and unchanged earlier image progress while a failed asset is being retried.
-- [ ] Verify deterministic source 404/redirect/invalid content and upload HTTP 400/code rejection do not retry. Verify successful HTTP with missing URI/malformed API code fails safely. Assert sanitized source-vs-upload diagnostics include the image number and exclude fake secret URLs/credentials.
-- [ ] Verify a product-create connection failure or 5xx still sends exactly one create and remains submitted_unverified.
-- [ ] Run focused tests and confirm expected red failures before implementation.
-- [ ] Add `Http::retry` with an explicit connection/status predicate and `throw: false` only at the two asset-transfer HTTP boundaries. Preserve existing validation and URI checks. Separate fixed source-download, asset-upload, and account-authorization messages; retain no raw exception text.
-- [ ] Add the current image index/total to the blocked upload message without altering saved payload/progress or other errors.
-- [ ] Run focused and affected suites, lint/diff checks, self-review and commit only scoped changes; record red/green evidence in an ignored report.
+- [x] Write failing HTTP-boundary tests: source GET connection/502 then success; asset POST connection/502 then success; maximum three attempts when failure persists. Assert one product create after recovery and unchanged earlier image progress while a failed asset is being retried.
+- [x] Verify deterministic source 404/redirect/invalid content and upload HTTP 400/code rejection do not retry. Verify successful HTTP with missing URI/malformed API code fails safely. Assert sanitized source-vs-upload diagnostics include the image number and exclude fake secret URLs/credentials.
+- [x] Verify a product-create connection failure or 5xx still sends exactly one create and remains submitted_unverified.
+- [x] Run focused tests and confirm expected red failures before implementation.
+- [x] Add `Http::retry` with an explicit connection/status predicate and `throw: false` only at the two asset-transfer HTTP boundaries. Preserve existing validation and URI checks. Separate fixed source-download, asset-upload, and account-authorization messages; retain no raw exception text.
+- [x] Add the current image index/total to the blocked upload message without altering saved payload/progress or other errors.
+- [x] Run focused and affected suites, lint/diff checks, self-review and commit only scoped changes; record red/green evidence in an ignored report.
 
 ### Task 2: Final verification
 
-- [ ] Independent scoped specification/code-quality review, addressing concrete findings.
-- [ ] Coordinator runs the full backend suite once after implementation.
-- [ ] Read-only recovery/progress checks and asset-only probes of remaining images; no product creation or real-run updates.
-- [ ] Record only verified durable non-sensitive implementation facts in project memory; report outcome and actionable operator step.
+- [x] Independent scoped specification/code-quality review, addressing concrete findings.
+- [x] Coordinator runs the full backend suite once after implementation.
+- [x] Read-only recovery/progress checks and asset-only probes of remaining images; no product creation or real-run updates.
+- [x] Record only verified durable non-sensitive implementation facts in project memory; report outcome and actionable operator step.
+
+## Verified result
+
+Implementation ce8d708 passed independent scoped review without findings. HTTP-boundary TDD: 17 expected red failures, final focused 19 tests/564 assertions; affected 243 tests/3210 assertions; full backend 663 tests/5193 assertions. PHP lint and diff checks passed. Live asset-only verification accepted a main image and all three remaining variant images; the operator's blocked run stayed unchanged at 23/26 images with no submission attempt. The older exact exception remains unknown because it was discarded. No frontend rebuild, migration, real product create, SKU edit or inventory mutation was performed.
