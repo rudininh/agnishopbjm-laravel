@@ -182,7 +182,10 @@ class MarketplaceStockMirrorTransport
                 throw new StockHubTiktokReviewVersionUnavailable();
             }
             if ($creation && $response->status() < 500 && $errorCode !== false && $errorCode !== 0 && ! $returnedIdentity) {
-                throw new StockHubTiktokProductRejected('TikTok menolak produk (kode '.(int) $json['code'].'). Periksa kategori, atribut, dan data produk.');
+                $message = $errorCode === 12052217
+                    ? 'TikTok mewajibkan kategori V2 (kode 12052217). Coba Lagi untuk memuat dan memvalidasi kategori V2.'
+                    : 'TikTok menolak produk (kode '.(int) $json['code'].'). Periksa kategori, atribut, dan data produk.';
+                throw new StockHubTiktokProductRejected($message);
             }
             $ok = $response->successful() && is_array($json) && ($shopee
                 ? array_key_exists('error', $json) && '' === $json['error']

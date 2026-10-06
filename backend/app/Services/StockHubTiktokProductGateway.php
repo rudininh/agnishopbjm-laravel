@@ -13,6 +13,7 @@ class StockHubTiktokProductGateway
 {
     public const SOURCE = 'shopee-agnishopbjm';
     public const TARGET = 'tiktok-agnishopbjm';
+    public const CATEGORY_VERSION = 'v2';
 
     public function __construct(private MarketplaceStockMirrorTransport $transport) {}
 
@@ -108,7 +109,7 @@ class StockHubTiktokProductGateway
 
     public function categories(): array
     {
-        $data = $this->call(self::TARGET, 'GET', '/product/202309/categories', ['locale' => 'id-ID']);
+        $data = $this->call(self::TARGET, 'GET', '/product/202309/categories', ['locale' => 'id-ID', 'category_version' => self::CATEGORY_VERSION]);
         $this->require(is_array($data['categories'] ?? null), 'Kategori TikTok tidak tersedia.');
         return array_values(array_map(fn ($c) => ['id' => (string) $c['id'], 'name' => (string) ($c['local_name'] ?? $c['name'] ?? ''), 'parent_id' => (string) ($c['parent_id'] ?? '0'), 'is_leaf' => (bool) ($c['is_leaf'] ?? false)], array_filter($data['categories'], fn ($c) => is_array($c['permission_statuses'] ?? null) && in_array('AVAILABLE', $c['permission_statuses'], true))));
     }
@@ -120,7 +121,7 @@ class StockHubTiktokProductGateway
 
     public function validateAttributes(string $id): void
     {
-        $data = $this->call(self::TARGET, 'GET', '/product/202309/categories/'.$id.'/attributes');
+        $data = $this->call(self::TARGET, 'GET', '/product/202309/categories/'.$id.'/attributes', ['category_version' => self::CATEGORY_VERSION]);
         $this->require(is_array($data['attributes'] ?? null), 'Atribut kategori TikTok belum lengkap.');
         foreach ($data['attributes'] as $a) { $this->require(! ($a['is_required'] ?? false) && ! ($a['is_requried'] ?? false), 'Kategori membutuhkan atribut wajib yang belum didukung. Lengkapi melalui Seller Center.'); }
     }
@@ -276,7 +277,7 @@ class StockHubTiktokProductGateway
             foreach ($v['attributes'] as $a) { $attrs[] = ['name' => $a['name'], 'value_name' => $a['value_name'], ...(isset($a['image_url']) ? ['sku_img' => ['uri' => $uri($a['image_url'], 'ATTRIBUTE_IMAGE')]] : [])]; }
             $skus[] = ['seller_sku' => $v['seller_sku'], 'price' => ['amount' => $v['price'], 'currency' => 'IDR'], 'inventory' => [['warehouse_id' => $context['warehouse_id'], 'quantity' => $v['stock']]], 'sales_attributes' => $attrs];
         }
-        return ['title' => $source['title'], 'description' => $source['description'], 'category_id' => $context['category_id'], 'package_weight' => $context['package_weight'], 'package_dimensions' => $context['package_dimensions'], 'main_images' => array_map(fn ($url) => ['uri' => $uri($url, 'MAIN_IMAGE')], $source['main_images']), 'skus' => $skus];
+        return ['title' => $source['title'], 'description' => $source['description'], 'category_id' => $context['category_id'], 'category_version' => self::CATEGORY_VERSION, 'package_weight' => $context['package_weight'], 'package_dimensions' => $context['package_dimensions'], 'main_images' => array_map(fn ($url) => ['uri' => $uri($url, 'MAIN_IMAGE')], $source['main_images']), 'skus' => $skus];
     }
 
     public function prepareCreate(string $expectedShopId): \Closure

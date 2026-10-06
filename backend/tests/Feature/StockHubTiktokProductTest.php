@@ -21,6 +21,7 @@ class StockHubTiktokProductTest extends TestCase
     private array $payload = [];
     private array $targetVersions = [];
     private array $transportError = [];
+    private array $creationRejection = [];
     private array $sourceVariantIds = ['101', '102'];
     private ?string $transferStage = null;
     private array $transferFailures = [];
@@ -131,8 +132,16 @@ class StockHubTiktokProductTest extends TestCase
                 return Http::response(['error' => '', 'response' => ['model' => $models, 'tier_variation' => $tiers]]);
             }
             $data = [];
-            if ($path === '/product/202309/categories') { $data = ['categories' => [['id' => '600', 'parent_id' => '0', 'local_name' => 'Clothing', 'is_leaf' => $this->mode !== 'parent_category', 'permission_statuses' => [$this->mode === 'category_denied' ? 'INVITE_ONLY' : 'AVAILABLE']]]]; }
-            elseif (str_ends_with($path, '/attributes')) { $data = ['attributes' => in_array($this->mode, ['attribute','attribute_typo']) ? [['id' => 'a', $this->mode === 'attribute_typo' ? 'is_requried' : 'is_required' => true, 'type' => 'PRODUCT_PROPERTY']] : []]; }
+            if ($path === '/product/202309/categories') {
+                parse_str(parse_url($r->url(), PHP_URL_QUERY), $query);
+                $v2Tree = $this->mode === 'v2_tree';
+                $data = ['categories' => [['id' => $v2Tree ? (($query['category_version'] ?? null) === 'v2' ? '601306' : '601307') : '600', 'parent_id' => '0', 'local_name' => $v2Tree ? 'Hijab Instan' : 'Clothing', 'is_leaf' => $this->mode !== 'parent_category', 'permission_statuses' => [$this->mode === 'category_denied' ? 'INVITE_ONLY' : 'AVAILABLE']]]];
+            }
+            elseif (str_ends_with($path, '/attributes')) {
+                parse_str(parse_url($r->url(), PHP_URL_QUERY), $query);
+                $required = in_array($this->mode, ['attribute','attribute_typo']) || ($this->mode === 'v2_attributes' && ($query['category_version'] ?? null) !== 'v2');
+                $data = ['attributes' => $required ? [['id' => 'a', $this->mode === 'attribute_typo' ? 'is_requried' : 'is_required' => true, 'type' => 'PRODUCT_PROPERTY']] : []];
+            }
             elseif (str_ends_with($path, '/warehouses')) { $data = ['warehouses' => [['id' => 'wh', 'type' => $this->mode === 'return_warehouse' ? 'RETURN_WAREHOUSE' : 'SALES_WAREHOUSE', 'effect_status' => $this->mode === 'disabled_warehouse' ? 'DISABLED' : 'ENABLED']]]; }
             elseif (str_ends_with($path, '/products/search')) {
                 parse_str(parse_url($r->url(), PHP_URL_QUERY), $query);
@@ -153,6 +162,7 @@ class StockHubTiktokProductTest extends TestCase
             elseif ($path === '/product/202309/products' && $r->method() === 'POST') {
                 $this->creates++; $this->payload = $r->data();
                 $this->assertNotNull(DB::table('stock_hub_tiktok_product_runs')->where('status', 'submitting')->value('attempted_at'));
+                if ($this->creationRejection) { return Http::response(['code' => $this->creationRejection['code'], 'message' => 'secret remote rejection', ...($this->creationRejection['identity'] ? ['data' => ['product_id' => '200']] : [])], $this->creationRejection['http']); }
                 if ($this->mode === 'unknown') { throw new \Illuminate\Http\Client\ConnectionException('secret signed URL'); }
                 if ($this->mode === 'reject') { return Http::response(['code' => 120001, 'message' => 'secret rejection'], 400); }
                 if ($this->mode === 'server_error') { return Http::response(['code' => 120001, 'message' => 'secret server failure'], 500); }
@@ -189,6 +199,158 @@ class StockHubTiktokProductTest extends TestCase
         for ($i = 0; $i < 40 && $run['can_continue']; $i++) { $run = $this->postJson($this->base.'/runs/'.$run['run_id'].'/step')->assertSuccessful()->json('data'); }
         $this->assertFalse($run['can_continue']);
         return $run;
+    }
+
+    public function test_v2_categories_expose_only_the_requested_tree(): void
+    {
+        $this->mode = 'v2_tree';
+        $this->getJson($this->base.'/categories')->assertOk()->assertJsonCount(1, 'data')->assertJsonPath('data.0.id', '601306')->assertJsonPath('data.0.name', 'Hijab Instan');
+        $this->assertV2MetadataQueries('/product/202309/categories', 1);
+        $this->assertSame(0, $this->creates);
+    }
+
+    public function test_v2_only_category_can_be_created_without_remapping(): void
+    {
+        $this->mode = 'v2_tree';
+        $run = $this->finish($this->start(['category_id' => '601306']));
+        $this->assertSame('success', $run['status']);
+        $this->assertSame('601306', $this->payload['category_id']);
+        $this->assertSame(1, $this->creates);
+        $this->assertV2MetadataQueries('/product/202309/categories', 1);
+    }
+
+    public function test_v2_metadata_blocks_a_v1_only_category_before_attempt(): void
+    {
+        $this->mode = 'v2_tree';
+        $run = $this->finish($this->start(['category_id' => '601307']));
+        $this->assertSame('blocked', $run['status']);
+        $this->assertSame(['category_id'], array_column($run['required_fields'], 'key'));
+        $this->assertNull(DB::table('stock_hub_tiktok_product_runs')->where('id', $run['run_id'])->value('attempted_at'));
+        $this->assertSame(0, $this->creates);
+        $this->assertV2MetadataQueries('/product/202309/categories', 1);
+    }
+
+    public function test_v2_attributes_allow_category_with_no_required_v2_properties(): void
+    {
+        $this->mode = 'v2_attributes';
+        $run = $this->finish($this->start());
+        $this->assertSame('success', $run['status']);
+        $this->assertSame(1, $this->creates);
+        $this->assertV2MetadataQueries('/product/202309/categories/600/attributes', 1);
+    }
+
+    private function assertV2MetadataQueries(string $path, int $count): void
+    {
+        $requests = Http::recorded(fn ($r) => parse_url($r->url(), PHP_URL_PATH) === $path);
+        $this->assertCount($count, $requests);
+        foreach ($requests as [$request]) {
+            parse_str(parse_url($request->url(), PHP_URL_QUERY), $query);
+            $this->assertSame('v2', $query['category_version'] ?? null);
+        }
+    }
+
+    public function test_v2_create_body_is_signed_with_the_category_version(): void
+    {
+        $run = $this->finish($this->start());
+        $this->assertSame('success', $run['status']);
+        $this->assertSame('v2', $this->payload['category_version'] ?? null);
+        $requests = Http::recorded(fn ($r) => parse_url($r->url(), PHP_URL_PATH) === '/product/202309/products' && $r->method() === 'POST');
+        $this->assertCount(1, $requests);
+        $request = $requests->first()[0];
+        parse_str(parse_url($request->url(), PHP_URL_QUERY), $query);
+        $this->assertSame(['app_key', 'shop_cipher', 'timestamp', 'sign'], array_keys($query));
+        $this->assertSame(hash_hmac('sha256', 'secret/product/202309/productsapp_keyappshop_ciphercipher-secrettimestamp'.$query['timestamp'].$request->body().'secret', 'secret'), $query['sign']);
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('v2Rejections')]
+    public function test_v2_known_rejection_has_safe_actionable_guidance(mixed $code): void
+    {
+        $this->creationRejection = ['code' => $code, 'http' => 400, 'identity' => false];
+        $run = $this->finish($this->start());
+        $this->assertSame('rejected', $run['status']);
+        $this->assertTrue($run['can_retry']);
+        $this->assertSame('TikTok mewajibkan kategori V2 (kode 12052217). Coba Lagi untuk memuat dan memvalidasi kategori V2.', $run['message']);
+        $this->assertStringNotContainsString('secret', json_encode($run));
+        $this->assertNotNull(DB::table('stock_hub_tiktok_product_runs')->where('id', $run['run_id'])->value('attempted_at'));
+        $this->postJson($this->base.'/runs/'.$run['run_id'].'/step')->assertOk()->assertJsonPath('data.status', 'rejected');
+        $this->assertSame(1, $this->creates);
+    }
+
+    public static function v2Rejections(): array
+    {
+        return ['integer' => [12052217], 'string' => ['12052217']];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('v2UncertainRejections')]
+    public function test_v2_known_code_preserves_uncertain_rejection_gate(int $http, bool $identity): void
+    {
+        $this->creationRejection = ['code' => 12052217, 'http' => $http, 'identity' => $identity];
+        $run = $this->finish($this->start());
+        $this->assertSame('submitted_unverified', $run['status']);
+        $this->assertFalse($run['can_retry']);
+        $this->postJson($this->base.'/runs/'.$run['run_id'].'/step')->assertOk()->assertJsonPath('data.status', 'submitted_unverified');
+        $this->assertSame(1, $this->creates);
+    }
+
+    public static function v2UncertainRejections(): array
+    {
+        return ['server error' => [500, false], 'returned identity' => [400, true]];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('legacyCategoryVersions')]
+    public function test_category_version_legacy_unattempted_state_blocks_and_retry_revalidates(?string $validated, ?string $payloadVersion): void
+    {
+        $run = $this->start();
+        while ($run['can_continue'] && $run['stage'] !== 'submitting') { $run = $this->postJson($this->base.'/runs/'.$run['run_id'].'/step')->assertOk()->json('data'); }
+        $this->assertSame('submitting', $run['stage']);
+        $state = json_decode(DB::table('stock_hub_tiktok_product_runs')->where('id', $run['run_id'])->value('state'), true);
+        unset($state['validated_category_version'], $state['payload']['category_version']);
+        if ($validated !== null) { $state['validated_category_version'] = $validated; }
+        if ($payloadVersion !== null) { $state['payload']['category_version'] = $payloadVersion; }
+        DB::table('stock_hub_tiktok_product_runs')->where('id', $run['run_id'])->update(['state' => json_encode($state)]);
+        $calls = count(Http::recorded());
+        $this->getJson($this->base.'/runs/'.$run['run_id'])->assertOk()->assertJsonPath('data.status', 'submitting');
+        $this->assertSame($calls, count(Http::recorded()));
+        $run = $this->finish($run);
+        $this->assertSame('blocked', $run['status']);
+        $this->assertTrue($run['can_retry']);
+        $this->assertStringContainsString('V2', $run['message']);
+        $this->assertStringContainsString('Coba Lagi', $run['message']);
+        $this->assertSame(['category_id'], array_column($run['required_fields'], 'key'));
+        $this->assertSame('600', $run['context']['category_id']);
+        $this->assertNull(DB::table('stock_hub_tiktok_product_runs')->where('id', $run['run_id'])->value('attempted_at'));
+        $this->assertSame(0, $this->creates);
+        $retry = $this->finish($this->start($run['context']));
+        $this->assertNotSame($run['run_id'], $retry['run_id']);
+        $this->assertSame('success', $retry['status']);
+        $this->assertSame(1, $this->creates);
+        $this->assertV2MetadataQueries('/product/202309/categories', 2);
+        $this->assertV2MetadataQueries('/product/202309/categories/600/attributes', 2);
+        $this->assertCount(4, Http::recorded(fn ($r) => parse_url($r->url(), PHP_URL_PATH) === '/product/202502/products/search'));
+    }
+
+    public static function legacyCategoryVersions(): array
+    {
+        return ['both absent' => [null, null], 'marker absent' => [null, 'v2'], 'marker v1' => ['v1', 'v2'], 'body absent' => ['v2', null], 'body v1' => ['v2', 'v1']];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('attemptedLegacyCategoryVersions')]
+    public function test_category_version_guard_never_intercepts_attempted_legacy_recovery(bool $knownIdentity): void
+    {
+        $this->mode = $knownIdentity ? 'readback' : 'unknown';
+        $run = $this->finish($this->start());
+        $this->assertSame('submitted_unverified', $run['status']);
+        $state = json_decode(DB::table('stock_hub_tiktok_product_runs')->where('id', $run['run_id'])->value('state'), true);
+        unset($state['validated_category_version'], $state['payload']['category_version']);
+        DB::table('stock_hub_tiktok_product_runs')->where('id', $run['run_id'])->update(['state' => json_encode($state)]);
+        $this->mode = '';
+        $this->postJson($this->base.'/runs/'.$run['run_id'].'/step')->assertOk()->assertJsonPath('data.status', $knownIdentity ? 'success' : 'submitted_unverified');
+        $this->assertSame(1, $this->creates);
+    }
+
+    public static function attemptedLegacyCategoryVersions(): array
+    {
+        return ['known identity' => [true], 'unknown identity' => [false]];
     }
 
     private function prepareImageTransfer(string $stage, array $failures): array

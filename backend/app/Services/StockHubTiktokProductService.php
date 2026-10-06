@@ -99,6 +99,11 @@ class StockHubTiktokProductService
                 if ($done) { $state['payload'] = $this->gateway->payload($state['source'], $state['context'], $state['images']); }
                 $this->save($id, $done ? 'submitting' : 'uploading', $state, $done ? 'Memeriksa sumber sebelum mengirim produk.' : 'Mengunggah gambar ke TikTok.');
             } elseif ($row->status === 'submitting') {
+                if (($state['validated_category_version'] ?? null) !== StockHubTiktokProductGateway::CATEGORY_VERSION
+                    || ($state['payload']['category_version'] ?? null) !== StockHubTiktokProductGateway::CATEGORY_VERSION) {
+                    $state['required_fields'] = $this->gateway->contextFields(['category_id']);
+                    throw new \DomainException('Kategori belum divalidasi dengan V2. Coba Lagi untuk memuat dan memvalidasi kategori V2.');
+                }
                 $fresh = $this->gateway->source($row->source_product_id);
                 if (! $this->sameSource($fresh, $state['source'])) { throw new \DomainException('Produk sumber berubah selama proses. Periksa data dan coba kembali.'); }
                 if ($this->gateway->linked($row->source_product_id)) { $this->save($id, 'exists', $state, 'Produk sudah memiliki relasi TikTok.'); return $this->show($id); }
@@ -172,6 +177,7 @@ class StockHubTiktokProductService
             $state['prepare'] = 'category';
         } elseif ($phase === 'category') {
             $this->gateway->validateCategory($state['context']['category_id']);
+            $state['validated_category_version'] = StockHubTiktokProductGateway::CATEGORY_VERSION;
             $state['prepare'] = 'attributes';
         } elseif ($phase === 'attributes') {
             $this->gateway->validateAttributes($state['context']['category_id']);
