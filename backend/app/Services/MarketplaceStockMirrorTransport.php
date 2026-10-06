@@ -113,7 +113,7 @@ class MarketplaceStockMirrorTransport
         $context = $this->context('tiktok-agnishopbjm', false, 6);
         $config = $context['config'];
         $path = '/product/202309/images/upload';
-        $query = ['app_key' => $config['app_key'], 'shop_cipher' => $context['cipher'], 'timestamp' => time()];
+        $query = ['app_key' => $config['app_key'], 'timestamp' => time()];
         ksort($query);
         $base = $config['app_secret'].$path;
         foreach ($query as $key => $value) { $base .= $key.$value; }

@@ -96,7 +96,13 @@ class StockHubTiktokProductTest extends TestCase
                 if ($this->mode === 'missing_page') { $data['total_count'] = 2; }
             }
             elseif (str_ends_with($path, '/products/90')) { $data = ['id' => '90', 'title' => in_array($this->mode, ['same_title','matching_sku']) ? 'Full product' : 'Other product', 'skus' => [['id' => '901', 'seller_sku' => match ($this->mode) { 'duplicate' => 'INT-10-OTHER', 'matching_sku' => 'CUSTOM-GREEN', default => 'OTHER' }]]]; }
-            elseif (str_ends_with($path, '/images/upload')) { $data = ['uri' => 'tiktok-uri-'.count(Http::recorded())]; }
+            elseif (str_ends_with($path, '/images/upload')) {
+                parse_str(parse_url($r->url(), PHP_URL_QUERY), $query);
+                if (array_key_exists('shop_cipher', $query)) {
+                    return Http::response(['code' => 36009004, 'message' => "Unexpected identifier. The 'shop_cipher' query parameter is not required for this request."], 400);
+                }
+                $data = ['uri' => 'tiktok-uri-'.count(Http::recorded())];
+            }
             elseif ($path === '/product/202309/products' && $r->method() === 'POST') {
                 $this->creates++; $this->payload = $r->data();
                 $this->assertNotNull(DB::table('stock_hub_tiktok_product_runs')->where('status', 'submitting')->value('attempted_at'));
@@ -465,6 +471,29 @@ class StockHubTiktokProductTest extends TestCase
         $this->assertSame('Original description', $this->payload['description']);
         $this->assertCount(1, $this->payload['main_images']);
         $this->assertStringStartsWith('tiktok-uri-', $this->payload['skus'][1]['sales_attributes'][0]['sku_img']['uri']);
+        $uploads = Http::recorded(fn ($r) => parse_url($r->url(), PHP_URL_PATH) === '/product/202309/images/upload');
+        $this->assertCount(3, $uploads);
+        $useCases = [];
+        $imageUris = [];
+        foreach ($uploads as [$request, $response]) {
+            parse_str(parse_url($request->url(), PHP_URL_QUERY), $query);
+            $this->assertSame(['app_key', 'timestamp', 'sign'], array_keys($query));
+            $this->assertSame('app', $query['app_key']);
+            // Independently construct the upload signature: no shop cipher or multipart body.
+            $this->assertSame(hash_hmac('sha256', 'secret/product/202309/images/uploadapp_keyapptimestamp'.$query['timestamp'].'secret', 'secret'), $query['sign']);
+            $this->assertSame('POST', $request->method());
+            $this->assertSame(['tiktok-secret'], $request->header('x-tts-access-token'));
+            $this->assertTrue($request->isMultipart());
+            $this->assertTrue($request->hasFile('data', 'image-bytes', 'product.jpg'));
+            $useCases[] = array_column($request->data(), 'contents', 'name')['use_case'];
+            $imageUris[] = $response->json('data.uri');
+        }
+        $this->assertSame(['MAIN_IMAGE', 'ATTRIBUTE_IMAGE', 'ATTRIBUTE_IMAGE'], $useCases);
+        $this->assertSame($imageUris, [$this->payload['main_images'][0]['uri'], $this->payload['skus'][0]['sales_attributes'][0]['sku_img']['uri'], $this->payload['skus'][1]['sales_attributes'][0]['sku_img']['uri']]);
+        Http::assertSent(function ($r) {
+            parse_str(parse_url($r->url(), PHP_URL_QUERY), $query);
+            return parse_url($r->url(), PHP_URL_PATH) === '/product/202309/products' && ($query['shop_cipher'] ?? null) === 'cipher-secret';
+        });
         $this->assertSame(2, DB::table('tiktok_products')->count());
         $this->assertSame(19, DB::table('stock_master')->value('stock'));
         $this->assertSame('201', DB::table('marketplace_listings')->where('account_key', 'tiktok-agnishopbjm')->value('remote_variant_id'));
