@@ -149,13 +149,59 @@ class StockHubTiktokProductGateway
 
     public function target(string $id, bool $review = false): array
     {
+        $message = 'Identitas SKU produk TikTok '.$id.' belum lengkap atau berbeda antar versi. Periksa produk ini di Seller Center lalu coba kembali.';
         $ctx = $this->transport->context(self::TARGET, false, 6);
         $data = $this->call(self::TARGET, 'GET', '/product/202309/products/'.$id, $review ? ['return_under_review_version' => 'true'] : []);
         $p = $data['product'] ?? $data;
-        $this->require((string) ($p['id'] ?? '') === $id && is_array($p['skus'] ?? null) && array_is_list($p['skus']) && count($p['skus']) > 0, 'Produk TikTok tidak lengkap.');
-        $this->require(! isset($p['shop_id']) || (string) $p['shop_id'] === $ctx['shop_id'], 'Produk TikTok berasal dari akun berbeda.');
-        foreach ($p['skus'] as $sku) { $this->require(ctype_digit((string) ($sku['id'] ?? '')) && array_key_exists('seller_sku', $sku), 'Identitas SKU TikTok belum lengkap.'); }
-        return $p;
+        $this->require(is_array($p), $message);
+        $ids = $this->targetSkuIds($p, $id, $ctx['shop_id'], $message);
+        $incomplete = false;
+        foreach ($p['skus'] as $sku) {
+            if (($sku['seller_sku'] ?? null) === null) { $incomplete = true; }
+            else { $this->require(is_string($sku['seller_sku']), $message); }
+        }
+        if (! $incomplete) { return $p; }
+
+        $this->require($review && $this->approvedActive($p), $message);
+        $this->assertTargetShop($ctx['shop_id']);
+        $data = $this->call(self::TARGET, 'GET', '/product/202309/products/'.$id);
+        $normal = $data['product'] ?? $data;
+        $this->assertTargetShop($ctx['shop_id']);
+        $this->require(is_array($normal), $message);
+        $normalIds = $this->targetSkuIds($normal, $id, $ctx['shop_id'], $message);
+        $normalize = fn ($title) => mb_strtolower(trim(preg_replace('/\s+/u', ' ', $title)));
+        $this->require($this->approvedActive($normal) && $ids === $normalIds
+            && is_string($p['title'] ?? null) && $normalize($p['title']) !== ''
+            && is_string($normal['title'] ?? null) && $normalize($p['title']) === $normalize($normal['title']), $message);
+        $reviewSkus = array_column($p['skus'], null, 'id');
+        foreach ($normal['skus'] as $sku) {
+            $this->require(is_string($sku['seller_sku'] ?? null) && trim($sku['seller_sku']) !== '', $message);
+            $known = $reviewSkus[$sku['id']]['seller_sku'] ?? null;
+            $this->require($known === null || $known === $sku['seller_sku'], $message);
+        }
+        // An approved review response can omit SKU data; use one complete snapshot, never splice versions.
+        return $normal;
+    }
+
+    private function targetSkuIds(array $p, string $id, string $shopId, string $message): array
+    {
+        $this->require((is_string($p['id'] ?? null) || is_int($p['id'] ?? null)) && (string) $p['id'] === $id
+            && is_array($p['skus'] ?? null) && array_is_list($p['skus']) && $p['skus'] !== [], $message);
+        $this->require(! isset($p['shop_id']) || (is_scalar($p['shop_id']) && (string) $p['shop_id'] === $shopId), $message);
+        $ids = [];
+        foreach ($p['skus'] as $sku) {
+            $this->require(is_array($sku) && (is_string($sku['id'] ?? null) || is_int($sku['id'] ?? null))
+                && ctype_digit((string) $sku['id']), $message);
+            $ids[] = (string) $sku['id'];
+        }
+        $this->require(count(array_unique($ids)) === count($ids), $message);
+        sort($ids, SORT_STRING);
+        return $ids;
+    }
+
+    private function approvedActive(array $p): bool
+    {
+        return in_array($p['status'] ?? null, ['ACTIVATE','ACTIVE',4], true) && ($p['audit']['status'] ?? null) === 'APPROVED';
     }
 
     public function duplicate(array $source, array $target): ?string

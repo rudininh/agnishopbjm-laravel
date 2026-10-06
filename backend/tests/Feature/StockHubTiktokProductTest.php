@@ -19,6 +19,7 @@ class StockHubTiktokProductTest extends TestCase
     private string $mode = '';
     private int $creates = 0;
     private array $payload = [];
+    private array $targetVersions = [];
     private string $base = '/api/marketplace/tiktok-product-creation';
 
     protected function setUp(): void
@@ -40,6 +41,14 @@ class StockHubTiktokProductTest extends TestCase
         DB::table('marketplace_listings')->insert(['stock_master_id' => 1, 'account_key' => 'shopee-agnishopbjm', 'channel' => 'shopee', 'remote_product_id' => '10', 'remote_variant_id' => '101', 'remote_identity_hash' => hash('sha256', 'source'), 'seller_sku' => 'INT-10-GREEN']);
         Http::fake(function ($r) {
             $path = parse_url($r->url(), PHP_URL_PATH);
+            if (preg_match('~/product/202309/products/([0-9]+)$~', $path, $match) && isset($this->targetVersions[$match[1]])) {
+                parse_str(parse_url($r->url(), PHP_URL_QUERY), $query);
+                if ($this->mode === 'fallback_shop_drift' && ! isset($query['return_under_review_version'])) {
+                    DB::table('tiktok_tokens')->update(['shop_id' => '44']);
+                    DB::table('tiktok_shops')->update(['shop_id' => '44', 'cipher' => 'changed-shop-cipher']);
+                }
+                return Http::response(['code' => 0, 'data' => $this->targetVersions[$match[1]][isset($query['return_under_review_version']) ? 'review' : 'normal']]);
+            }
             if ($path === '/product/202509/products/90/partial_edit') {
                 $this->assertSame('INT-10-GREEN', $r['skus'][0]['seller_sku']);
                 throw new \Illuminate\Http\Client\ConnectionException('Outcome unknown after remote SKU edit');
@@ -118,6 +127,143 @@ class StockHubTiktokProductTest extends TestCase
         for ($i = 0; $i < 40 && $run['can_continue']; $i++) { $run = $this->postJson($this->base.'/runs/'.$run['run_id'].'/step')->assertSuccessful()->json('data'); }
         $this->assertFalse($run['can_continue']);
         return $run;
+    }
+
+    private function approvedCatalogVersions(bool $matching = false, bool $nullSku = false): array
+    {
+        $normal = ['id' => '90', 'shop_id' => '33', 'title' => 'Other product', 'status' => 'ACTIVATE', 'audit' => ['status' => 'APPROVED'], 'skus' => [
+            ['id' => '901', 'seller_sku' => $matching ? 'INT-10-GREEN' : 'OTHER-GREEN'],
+            ['id' => '902', 'seller_sku' => 'OTHER-BLUE'],
+        ]];
+        $review = $normal;
+        if ($nullSku) { $review['skus'][0]['seller_sku'] = null; }
+        else { unset($review['skus'][0]['seller_sku']); }
+        $normal['skus'] = array_reverse($normal['skus']);
+        return ['review' => $review, 'normal' => $normal];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('approvedMissingIdentity')]
+    public function test_approved_partial_review_uses_complete_normal_identity_before_duplicate_scan(bool $matching, bool $nullSku): void
+    {
+        $this->targetVersions['90'] = $this->approvedCatalogVersions($matching, $nullSku);
+        $run = $this->finish($this->start());
+        $this->assertSame($matching ? 'exists' : 'success', $run['status'], $run['message']);
+        $this->assertSame($matching ? 0 : 1, $this->creates);
+        Http::assertSent(fn ($r) => str_contains($r->url(), '/products/90?') && ! str_contains($r->url(), 'return_under_review_version'));
+        $this->assertSame($matching ? '90' : '200', $run['result']['product_id']);
+        $this->assertSame($matching ? 0 : 2, DB::table('tiktok_products')->count());
+        $this->assertSame(19, DB::table('stock_master')->value('stock'));
+    }
+
+    public static function approvedMissingIdentity(): array
+    {
+        return ['omitted unrelated' => [false, false], 'omitted matching' => [true, false], 'null unrelated' => [false, true], 'null matching' => [true, true]];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('fallbackTitles')]
+    public function test_approved_review_fallback_cannot_hide_ambiguous_or_empty_titles(string $reviewTitle, string $normalTitle): void
+    {
+        $versions = $this->approvedCatalogVersions();
+        $versions['review']['title'] = $reviewTitle;
+        $versions['normal']['title'] = $normalTitle;
+        $this->targetVersions['90'] = $versions;
+        $run = $this->finish($this->start());
+        $this->assertSame('blocked', $run['status']);
+        $this->assertNull($run['result']);
+        $this->assertSame(0, $this->creates);
+        Http::assertSent(fn ($r) => str_contains($r->url(), '/products/90?') && ! str_contains($r->url(), 'return_under_review_version'));
+    }
+
+    public static function fallbackTitles(): array
+    {
+        return ['normalized source title' => [" Full\tPRODUCT ", 'full product'], 'normalized empty title' => ["\u{00A0}", "\u{00A0}"]];
+    }
+
+    public function test_approved_review_fallback_requires_unchanged_authorized_shop_when_payload_omits_owner(): void
+    {
+        $versions = $this->approvedCatalogVersions();
+        unset($versions['review']['shop_id'], $versions['normal']['shop_id']);
+        $this->targetVersions['90'] = $versions;
+        $this->mode = 'fallback_shop_drift';
+        $run = $this->finish($this->start());
+        $this->assertSame('blocked', $run['status']);
+        $this->assertNull($run['result']);
+        $this->assertSame(0, $this->creates);
+        $this->assertNull(DB::table('stock_hub_tiktok_product_runs')->where('id', $run['run_id'])->value('attempted_at'));
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('unsafeReviewFallback')]
+    public function test_incomplete_review_fallback_blocks_unproven_or_conflicting_versions(string $version, string $path, mixed $value): void
+    {
+        $versions = $this->approvedCatalogVersions();
+        data_set($versions[$version], $path, $value);
+        $this->targetVersions['90'] = $versions;
+        $run = $this->finish($this->start());
+        $this->assertSame('blocked', $run['status']);
+        $this->assertStringContainsString('90', $run['message']);
+        $this->assertNull($run['result']);
+        $this->assertNull(DB::table('stock_hub_tiktok_product_runs')->where('id', $run['run_id'])->value('attempted_at'));
+        $this->assertSame(0, $this->creates);
+        $this->assertSame(0, DB::table('tiktok_products')->count());
+    }
+
+    public static function unsafeReviewFallback(): array
+    {
+        return [
+            'review auditing' => ['review', 'audit.status', 'AUDITING'],
+            'review pending' => ['review', 'audit.status', 'PENDING'],
+            'review rejected' => ['review', 'audit.status', 'REJECTED'],
+            'review audit absent' => ['review', 'audit', null],
+            'review inactive' => ['review', 'status', 'SELLER_DRAFT'],
+            'review invalid ID' => ['review', 'skus.0.id', 'invalid'],
+            'review repeated ID' => ['review', 'skus.1.id', '901'],
+            'review malformed seller SKU' => ['review', 'skus.0.seller_sku', ['invalid']],
+            'review wrong shop' => ['review', 'shop_id', '44'],
+            'normal wrong product' => ['normal', 'id', '91'],
+            'normal wrong shop' => ['normal', 'shop_id', '44'],
+            'normal auditing' => ['normal', 'audit.status', 'AUDITING'],
+            'normal audit absent' => ['normal', 'audit', null],
+            'normal inactive' => ['normal', 'status', 'SELLER_DRAFT'],
+            'normal invalid ID' => ['normal', 'skus.0.id', 'invalid'],
+            'normal repeated ID' => ['normal', 'skus.0.id', '901'],
+            'normal mismatched IDs' => ['normal', 'skus.1.id', '999'],
+            'normal null seller SKU' => ['normal', 'skus.1.seller_sku', null],
+            'normal empty seller SKU' => ['normal', 'skus.1.seller_sku', ''],
+            'normal malformed seller SKU' => ['normal', 'skus.1.seller_sku', 123],
+            'existing seller SKU conflict' => ['normal', 'skus.0.seller_sku', 'CHANGED'],
+            'review title-only candidate' => ['review', 'title', 'Full product'],
+            'review missing title' => ['review', 'title', null],
+            'normal missing title' => ['normal', 'title', ''],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('approvedReadback')]
+    public function test_approved_review_readback_verifies_the_whole_normal_snapshot(string $mode): void
+    {
+        $normal = ['id' => '200', 'shop_id' => '33', 'title' => 'Full product', 'status' => 'ACTIVATE', 'audit' => ['status' => 'APPROVED'], 'skus' => [
+            ['id' => '201', 'seller_sku' => 'INT-10-GREEN', 'price' => ['sale_price' => '150000'], 'inventory' => [['warehouse_id' => 'wh', 'quantity' => 0]]],
+            ['id' => '202', 'seller_sku' => 'INT-10-BLUE', 'price' => ['sale_price' => '175000'], 'inventory' => [['warehouse_id' => 'wh', 'quantity' => 7]]],
+        ]];
+        $review = $normal;
+        unset($review['skus'][0]['seller_sku']);
+        if ($mode === 'wrong_price') { $normal['skus'][0]['price']['sale_price'] = '150001'; }
+        if ($mode === 'wrong_stock') { $normal['skus'][0]['inventory'][0]['quantity'] = 1; }
+        if ($mode === 'wrong_sku') { $normal['skus'][0]['seller_sku'] = 'OTHER'; }
+        $this->targetVersions['200'] = ['review' => $review, 'normal' => $normal];
+        $run = $this->finish($this->start());
+        $this->assertSame($mode === 'complete' ? 'success' : 'submitted_unverified', $run['status']);
+        $this->assertSame('200', $run['remote_product_id']);
+        Http::assertSent(fn ($r) => str_contains($r->url(), '/products/200?') && ! str_contains($r->url(), 'return_under_review_version'));
+        $this->assertSame($mode === 'complete' ? 2 : 0, DB::table('tiktok_products')->count());
+        $this->assertFalse($run['can_retry']);
+        $this->assertSame($run['run_id'], $this->start()['run_id']);
+        $this->postJson($this->base.'/runs/'.$run['run_id'].'/step')->assertOk();
+        $this->assertSame(1, $this->creates);
+    }
+
+    public static function approvedReadback(): array
+    {
+        return array_map(fn ($mode) => [$mode], ['complete', 'wrong_price', 'wrong_stock', 'wrong_sku']);
     }
 
     public function test_complete_product_copies_all_variants_images_prices_and_zero_stock_without_changing_stock_master(): void
