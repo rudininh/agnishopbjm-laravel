@@ -11,9 +11,9 @@ const continues = run => Boolean(run?.run_id && run.can_continue && running.has(
 const retryable = run => Boolean(run?.can_retry && ['blocked', 'rejected'].includes(run.status))
 const storageKey = 'stock-hub-tiktok-creation:identifiers'
 
-export function canCreateTiktokProduct({ unified, accountKey, item, busy = false, run }) {
+export function canCreateTiktokProduct({ unified, accountKey, item, busy = false, run, remembered = false }) {
   return Boolean(unified && accountKey === 'shopee-agnishopbjm' && !busy && /^\d+$/.test(String(item?.item_id || ''))
-    && item?.destination_presence?.['tiktok-agnishopbjm'] === 'missing' && !run)
+    && item?.destination_presence?.['tiktok-agnishopbjm'] === 'missing' && !run && !remembered)
 }
 
 export function creationRowResult(run) {
@@ -171,6 +171,10 @@ export function createTiktokProductController(api, options = {}) {
       }
     }) },
     async restore() {
+      // Remember every source before the first awaited GET; identifiers are not evidence of acceptance.
+      for (const [sourceId, identity] of Object.entries(identifiers)) {
+        if (/^\d+$/.test(sourceId) && (identity?.run_id || identity?.request_key)) options.onRemember?.(sourceId)
+      }
       for (const sourceId of Object.keys(identifiers)) { if (!alive) break; await this.recover(sourceId) }
     },
     stop() { if (!alive) return; options.onBusy?.(false); alive = false; state.busy = false }

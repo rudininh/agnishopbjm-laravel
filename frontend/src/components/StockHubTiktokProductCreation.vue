@@ -49,7 +49,7 @@ import { omnichannelService } from '@/services'
 import { createTiktokProductController, creationContext, creationFieldValues, creationLeafCategories, creationRowResult } from '@/pages/stockHubTiktokProductCreationState'
 
 const props = defineProps({ disabled: Boolean })
-const emit = defineEmits(['busy', 'run'])
+const emit = defineEmits(['busy', 'run', 'remembered'])
 const state = ref({ busy: false, run: null, pendingKey: '', error: '', sourceId: '', paused: false })
 const open = ref(false), dialog = ref(null), productName = ref(''), formError = ref(''), values = ref({})
 const categoryNodes = ref([]), categorySearch = ref(''), categoriesLoading = ref(false), categoryError = ref('')
@@ -57,7 +57,7 @@ let alive = true, previousFocus = null
 let storage
 try { storage = globalThis.localStorage } catch {}
 const controller = createTiktokProductController(omnichannelService, {
-  storage, onChange: value => { state.value = value }, onBusy: value => emit('busy', value), onRun: run => emit('run', run)
+  storage, onChange: value => { state.value = value }, onBusy: value => emit('busy', value), onRun: run => emit('run', run), onRemember: sourceId => emit('remembered', sourceId)
 })
 const rowResult = computed(() => creationRowResult(state.value.run))
 const categories = computed(() => {

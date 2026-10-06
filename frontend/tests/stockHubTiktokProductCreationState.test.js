@@ -247,3 +247,19 @@ test('reload after an ambiguous filled-context retry only recovers identifiers w
   assert.ok(second.state.pendingKey)
   assert.ok(second.state.error)
 })
+
+test('remembered source identities prevent creation during and after failed restore without claiming a run outcome', async () => {
+  let rejectLookup; const remembered = [], runs = [], calls = []
+  const storage = { getItem: () => JSON.stringify({ [source]: { run_id: 'saved-accepted-run' }, '999': { request_key: 'saved-request' } }) }
+  const c = controller({ tiktokProductCreationSource: async id => { calls.push(['GET', id]); if (id === source) return new Promise((resolve, reject) => { rejectLookup = reject }); throw Error('offline') },
+    startTiktokProductCreation: async () => calls.push(['POST']) },
+  { storage, onRemember: sourceId => remembered.push(sourceId), onRun: saved => runs.push(saved) })
+  const restoring = c.restore()
+  assert.deepEqual([...remembered].sort(), [source, '999'])
+  assert.equal(canCreateTiktokProduct({ unified: true, accountKey: 'shopee-agnishopbjm', item, remembered: remembered.includes(source) }), false)
+  await new Promise(resolve => setImmediate(resolve))
+  rejectLookup(Error('offline')); await restoring
+  assert.equal(canCreateTiktokProduct({ unified: true, accountKey: 'shopee-agnishopbjm', item, remembered: remembered.includes(source) }), false)
+  assert.deepEqual(runs, [])
+  assert.deepEqual(calls.map(call => call[0]), ['GET', 'GET'])
+})

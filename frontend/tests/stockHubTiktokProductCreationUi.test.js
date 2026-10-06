@@ -105,3 +105,30 @@ test('completion form renders only missing fields and names searchable leaf cate
   assert.deepEqual(payloads[0].context, { category_id: 'leaf', warehouse_id: 'known-wh', package_dimensions: { length: '10', width: '20', height: '3', unit: 'CENTIMETER' } })
   view.app.unmount()
 })
+
+test('remembered source row keeps a read-only recovery action while mount GET fails with stale missing catalog', async () => {
+  const previousStorage = globalThis.localStorage
+  const stored = JSON.stringify({ [source]: { run_id: 'saved-accepted-run' } })
+  globalThis.localStorage = { getItem: () => stored, setItem() {} }
+  let view, rejectLookup, gets = 0, posts = 0
+  try {
+    const api = { shopeeItems: async () => ({ data: { items: [structuredClone(item)] } }),
+      tiktokProductCreationSource: async () => { gets++; if (gets === 1) return new Promise((resolve, reject) => { rejectLookup = reject }); throw Error('offline') },
+      startTiktokProductCreation: async () => { posts++ } }
+    view = mount(await loadComponent('../src/pages/ShopeeStock.vue', api), { unified: true, accountKey: 'shopee-agnishopbjm' })
+    await tick()
+    assert.equal(Boolean(view.button('Buat di TikTok')), false, 'remembered identity excludes creation before recovery settles')
+    assert.ok(view.button('Muat Status TikTok'))
+    rejectLookup(Error('offline')); await tick()
+    assert.equal(Boolean(view.button('Buat di TikTok')), false)
+    assert.ok(view.button('Muat Status TikTok'))
+    assert.equal(view.text(view.root).includes('Menunggu peninjauan TikTok'), false)
+    assert.equal(view.text(view.root).includes('Terverifikasi di TikTok'), false)
+    view.button('Muat Status TikTok').props.onClick(); await tick()
+    assert.ok(view.all().find(el => el.props.role === 'dialog'))
+    assert.ok(view.button('Muat Status Tersimpan'))
+    assert.equal(gets, 2)
+    assert.equal(posts, 0)
+    assert.equal(Boolean(view.button('Buat di TikTok')), false)
+  } finally { view?.app.unmount(); if (previousStorage === undefined) delete globalThis.localStorage; else globalThis.localStorage = previousStorage }
+})
