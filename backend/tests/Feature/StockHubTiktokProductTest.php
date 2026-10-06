@@ -62,6 +62,7 @@ class StockHubTiktokProductTest extends TestCase
                 if ($this->mode === 'missing_sku') { $models[1]['model_sku'] = ''; }
                 if ($this->mode === 'conflicting_prefix') { $models[1]['model_sku'] = 'INT-11-BLUE'; }
                 if ($this->mode === 'missing_price') { unset($models[1]['price_info']); }
+                if ($this->mode === 'matching_sku') { $models[0]['model_sku'] = 'CUSTOM-GREEN'; }
                 return Http::response(['error' => '', 'response' => ['model' => $models, 'tier_variation' => [['name' => 'Color', 'option_list' => [['option' => 'Green', 'image' => ['image_url' => 'https://img.test/green.jpg']], ['option' => 'Blue', 'image' => ['image_url' => 'https://img.test/blue.jpg']]]]]]]);
             }
             $data = [];
@@ -76,7 +77,7 @@ class StockHubTiktokProductTest extends TestCase
                 if ($this->mode === 'repeated_product' && isset($query['page_token'])) { $data = ['products' => [['id' => '90']], 'next_page_token' => '', 'total_count' => 1]; }
                 if ($this->mode === 'missing_page') { $data['total_count'] = 2; }
             }
-            elseif (str_ends_with($path, '/products/90')) { $data = ['id' => '90', 'title' => $this->mode === 'same_title' ? 'Full product' : 'Other product', 'skus' => [['id' => '901', 'seller_sku' => $this->mode === 'duplicate' ? 'INT-10-OTHER' : 'OTHER']]]; }
+            elseif (str_ends_with($path, '/products/90')) { $data = ['id' => '90', 'title' => in_array($this->mode, ['same_title','matching_sku']) ? 'Full product' : 'Other product', 'skus' => [['id' => '901', 'seller_sku' => match ($this->mode) { 'duplicate' => 'INT-10-OTHER', 'matching_sku' => 'CUSTOM-GREEN', default => 'OTHER' }]]]; }
             elseif (str_ends_with($path, '/images/upload')) { $data = ['uri' => 'tiktok-uri-'.count(Http::recorded())]; }
             elseif ($path === '/product/202309/products' && $r->method() === 'POST') {
                 $this->creates++; $this->payload = $r->data();
@@ -100,6 +101,7 @@ class StockHubTiktokProductTest extends TestCase
                 if ($this->mode === 'wrong_read_stock') { $data['skus'][0]['inventory'][0]['quantity'] = 1; }
             }
             else { throw new \RuntimeException('Unexpected fake path '.$path); }
+            if ($this->mode === 'corrected_category' && isset($data['categories'])) { $data['categories'][] = ['id' => '601', 'parent_id' => '0', 'local_name' => 'Bags', 'is_leaf' => true, 'permission_statuses' => ['AVAILABLE']]; }
             if ($this->mode === 'category_unknown' && isset($data['categories'])) { unset($data['categories'][0]['permission_statuses']); }
             if ($this->mode === 'warehouse_unknown' && isset($data['warehouses'])) { unset($data['warehouses'][0]['effect_status']); }
             return Http::response(['code' => 0, 'data' => $data]);
@@ -147,19 +149,95 @@ class StockHubTiktokProductTest extends TestCase
         $this->assertSame('success', $this->finish($this->start())['status']);
     }
 
+    #[\PHPUnit\Framework\Attributes\DataProvider('invalidContext')]
+    public function test_filled_invalid_context_exposes_correction_and_retains_other_values(string $mode, string $field, string $invalid, string $corrected): void
+    {
+        $this->mode = $mode;
+        $run = $this->finish($this->start([$field => $invalid, ...($field === 'warehouse_id' ? ['category_id' => '600'] : [])]));
+        $this->assertSame('blocked', $run['status']);
+        $this->assertTrue($run['can_retry']);
+        $this->assertSame(0, $this->creates);
+        $saved = $this->getJson($this->base.'/source/10')->assertOk()->json('data');
+        $this->assertSame([$field], array_column($saved['required_fields'], 'key'));
+        $this->assertSame($invalid, $saved['context'][$field]);
+        $context = $saved['context'];
+        $context[$field] = $corrected;
+        $this->mode = 'corrected_category';
+        $next = $this->finish($this->start($context));
+        $this->assertNotSame($run['run_id'], $next['run_id']);
+        $this->assertSame('success', $next['status']);
+        $this->assertSame($context, $next['context']);
+        $this->assertSame($context['category_id'], $this->payload['category_id']);
+        $this->assertSame('wh', $this->payload['skus'][0]['inventory'][0]['warehouse_id']);
+        $this->assertSame(['value' => '0.5', 'unit' => 'KILOGRAM'], $this->payload['package_weight']);
+        $this->assertSame(['unit' => 'CENTIMETER', 'length' => '10', 'width' => '20', 'height' => '3'], $this->payload['package_dimensions']);
+        $this->assertSame([], $next['required_fields']);
+        $this->assertFalse($next['can_retry']);
+        $this->assertSame(1, $this->creates);
+    }
+
+    public static function invalidContext(): array
+    {
+        return [
+            'warehouse' => ['', 'warehouse_id', 'invalid-wh', 'wh'],
+            'category' => ['', 'category_id', '999', '600'],
+            'unsupported attributes' => ['attribute', 'category_id', '600', '601'],
+            'unsupported legacy attributes' => ['attribute_typo', 'category_id', '600', '601'],
+        ];
+    }
+
+    public function test_explicit_rejection_exposes_context_corrections_without_allowing_uncertain_replay(): void
+    {
+        $this->mode = 'reject';
+        $run = $this->finish($this->start());
+        $this->assertSame('rejected', $run['status']);
+        $saved = $this->getJson($this->base.'/source/10')->assertOk()->json('data');
+        $this->assertTrue($saved['can_retry']);
+        $this->assertSame(['category_id','warehouse_id','package_weight.value','package_dimensions.length','package_dimensions.width','package_dimensions.height'], array_column($saved['required_fields'], 'key'));
+        $context = $saved['context'];
+        $context['package_weight']['value'] = '0.75';
+        $this->mode = 'unknown';
+        $next = $this->finish($this->start($context));
+        $this->assertNotSame($run['run_id'], $next['run_id']);
+        $this->assertSame('0.75', $this->payload['package_weight']['value']);
+        $this->assertSame('600', $this->payload['category_id']);
+        $this->assertSame('wh', $this->payload['skus'][0]['inventory'][0]['warehouse_id']);
+        $this->assertSame('submitted_unverified', $next['status']);
+        $this->assertSame([], $next['required_fields']);
+        $this->assertFalse($next['can_retry']);
+        $this->assertSame($next['run_id'], $this->start()['run_id']);
+        $this->assertSame(2, $this->creates);
+    }
+
     #[\PHPUnit\Framework\Attributes\DataProvider('blockedModes')]
     public function test_invalid_source_duplicates_incomplete_catalog_and_images_block_before_submission(string $mode): void
     {
         $this->mode = $mode;
         $run = $this->finish($this->start());
-        $this->assertSame(in_array($mode, ['duplicate','same_title']) ? 'exists' : 'blocked', $run['status'], $mode);
+        $this->assertSame(in_array($mode, ['duplicate','matching_sku']) ? 'exists' : 'blocked', $run['status'], $mode);
+        if ($mode === 'same_title') {
+            $this->assertNull($run['result']);
+            $this->assertNull($run['remote_product_id']);
+            $this->assertStringContainsString('judul', $run['message']);
+            $this->getJson($this->base.'/source/10')->assertJsonPath('data.status', 'blocked')->assertJsonPath('data.result', null);
+        }
         $this->assertSame(0, $this->creates);
         $this->assertSame(0, DB::table('tiktok_products')->count());
     }
 
     public static function blockedModes(): array
     {
-        return array_map(fn ($m) => [$m], ['missing_stock','duplicate_sku','missing_sku','missing_price','conflicting_prefix','description','wrong_shop','pagination','image','attribute','attribute_typo','duplicate','same_title','loop','repeated_product','missing_page','category_denied','category_unknown','parent_category','return_warehouse','disabled_warehouse','warehouse_unknown']);
+        return array_map(fn ($m) => [$m], ['missing_stock','duplicate_sku','missing_sku','missing_price','conflicting_prefix','description','wrong_shop','pagination','image','attribute','attribute_typo','duplicate','matching_sku','same_title','loop','repeated_product','missing_page','category_denied','category_unknown','parent_category','return_warehouse','disabled_warehouse','warehouse_unknown']);
+    }
+
+    public function test_existing_source_link_remains_confirmed_without_creation(): void
+    {
+        DB::table('marketplace_listings')->insert(['stock_master_id' => 1, 'account_key' => 'tiktok-agnishopbjm', 'channel' => 'tiktok', 'remote_product_id' => '90', 'remote_variant_id' => '901', 'remote_identity_hash' => hash('sha256', 'linked'), 'seller_sku' => 'INT-10-GREEN']);
+        $run = $this->finish($this->start());
+        $this->assertSame('exists', $run['status']);
+        $this->assertFalse($run['can_retry']);
+        $this->assertSame($run['run_id'], $this->start()['run_id']);
+        $this->assertSame(0, $this->creates);
     }
 
     #[\PHPUnit\Framework\Attributes\DataProvider('uncertainModes')]

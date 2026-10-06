@@ -132,3 +132,116 @@ test('remembered source row keeps a read-only recovery action while mount GET fa
     assert.equal(Boolean(view.button('Buat di TikTok')), false)
   } finally { view?.app.unmount(); if (previousStorage === undefined) delete globalThis.localStorage; else globalThis.localStorage = previousStorage }
 })
+
+test('title-only blocked result keeps the actual stock row missing through catalog refresh and reload', async () => {
+  const previousStorage = globalThis.localStorage
+  let stored = '{}', posts = 0, view
+  globalThis.localStorage = { getItem: () => stored, setItem: (key, value) => { stored = value } }
+  const ambiguous = { ...snapshot('blocked'), message: 'Judul sama, hubungan SKU belum terbukti. Periksa Seller Center.' }
+  const api = { shopeeItems: async () => ({ data: { items: [structuredClone(item)] } }),
+    tiktokProductCreationSource: async () => ({ data: { data: ambiguous } }),
+    startTiktokProductCreation: async () => { posts++ } }
+  const assertMissing = () => {
+    assert.ok(view.all().some(el => el.type === 'tr' && el.props.class?.includes('missing-destination-row')))
+    assert.equal(view.text(view.root).includes('Sudah ditemukan di TikTok'), false)
+    assert.ok(view.button('Status Produk TikTok'))
+  }
+  try {
+    const component = await loadComponent('../src/pages/ShopeeStock.vue', api)
+    view = mount(component, { unified: true, accountKey: 'shopee-agnishopbjm' })
+    await tick(); view.button('Buat di TikTok').props.onClick(); await tick()
+    assertMissing()
+    view.button('Tutup').props.onClick(); view.button('Refresh').props.onClick(); await tick()
+    assertMissing()
+    view.app.unmount()
+    view = mount(component, { unified: true, accountKey: 'shopee-agnishopbjm' }); await tick()
+    assertMissing()
+    assert.equal(posts, 0)
+  } finally { view?.app.unmount(); if (previousStorage === undefined) delete globalThis.localStorage; else globalThis.localStorage = previousStorage }
+})
+
+const correctionFields = [
+  { key: 'category_id', type: 'category', label: 'Kategori TikTok' },
+  { key: 'warehouse_id', type: 'text', label: 'Gudang TikTok' },
+  { key: 'package_weight.value', type: 'number', label: 'Berat paket', unit: 'kg' },
+  { key: 'package_dimensions.length', type: 'number', label: 'Panjang paket', unit: 'cm' },
+  { key: 'package_dimensions.width', type: 'number', label: 'Lebar paket', unit: 'cm' },
+  { key: 'package_dimensions.height', type: 'number', label: 'Tinggi paket', unit: 'cm' }
+]
+const knownContext = { category_id: '600', warehouse_id: 'wh', package_weight: { value: '0.5', unit: 'KILOGRAM' },
+  package_dimensions: { length: '10', width: '20', height: '3', unit: 'CENTIMETER' } }
+
+for (const scenario of [
+  { name: 'filled invalid warehouse', context: { ...knownContext, warehouse_id: 'invalid-wh' }, fields: [correctionFields[1]], edits: { warehouse_id: 'wh' } },
+  { name: 'filled invalid category', context: { ...knownContext, category_id: '999' }, fields: [correctionFields[0]], edits: { category_id: '600' } },
+  { name: 'unsupported category attributes', context: knownContext, fields: [correctionFields[0]], edits: { category_id: '601' } },
+  { name: 'explicit rejection', status: 'rejected', context: knownContext, fields: correctionFields, edits: { category_id: '601', warehouse_id: 'corrected-wh', 'package_weight.value': '0.75', 'package_dimensions.length': '12' } }
+]) {
+  test(`real form corrects ${scenario.name} after reload and sends a new UUID only after fresh GET`, async () => {
+    const previousStorage = globalThis.localStorage
+    let stored = '{}', saved = null, view
+    globalThis.localStorage = { getItem: () => stored, setItem: (key, value) => { stored = value } }
+    const calls = [], payloads = []
+    const api = { shopeeItems: async () => ({ data: { items: [structuredClone(item)] } }),
+      tiktokProductCreationSource: async () => { calls.push('GET'); return { data: { data: structuredClone(saved) } } },
+      tiktokProductCreationCategories: async () => ({ data: { data: [
+        { id: '600', name: 'Clothing', is_leaf: true }, { id: '601', name: 'Bags', is_leaf: true }
+      ] } }),
+      startTiktokProductCreation: async payload => {
+        calls.push('POST'); payloads.push(structuredClone(payload))
+        saved = payloads.length === 1
+          ? { ...snapshot(scenario.status || 'blocked'), can_retry: true, context: scenario.context, required_fields: scenario.fields }
+          : { ...snapshot('success'), run_id: 'corrected-run', context: payload.context }
+        return { data: { data: saved } }
+      } }
+    try {
+      const component = await loadComponent('../src/pages/ShopeeStock.vue', api)
+      view = mount(component, { unified: true, accountKey: 'shopee-agnishopbjm' })
+      await tick(); view.button('Buat di TikTok').props.onClick(); await tick()
+      assert.deepEqual(calls, ['GET', 'POST'])
+      view.app.unmount()
+      view = mount(component, { unified: true, accountKey: 'shopee-agnishopbjm' }); await tick()
+      view.button('Status Produk TikTok').props.onClick(); await tick()
+      const labels = view.all().filter(el => el.type === 'label' && scenario.fields.some(field => view.text(el).startsWith(field.label)))
+      assert.equal(labels.length, scenario.fields.length, 'only corrective context fields appear')
+      for (const [key, value] of Object.entries(scenario.edits)) {
+        const field = scenario.fields.find(field => field.key === key)
+        const label = labels.find(el => view.text(el).startsWith(field.label))
+        const input = view.all().find(el => el.parent === label && (el.type === 'select' || (el.type === 'input' && el.props.type !== 'search')))
+        input.props['onUpdate:modelValue'](value)
+      }
+      await tick()
+      view.all().find(el => el.type === 'form').props.onSubmit({ preventDefault() {} }); await tick()
+      assert.deepEqual(calls.slice(-2), ['GET', 'POST'])
+      assert.equal(payloads.length, 2)
+      assert.notEqual(payloads[1].request_key, payloads[0].request_key)
+      assert.match(payloads[1].request_key, /^[0-9a-f-]{36}$/)
+      assert.deepEqual(payloads[1].context, {
+        category_id: scenario.edits.category_id || '600', warehouse_id: scenario.edits.warehouse_id || 'wh',
+        package_weight: { value: scenario.edits['package_weight.value'] || '0.5', unit: 'KILOGRAM' },
+        package_dimensions: { length: scenario.edits['package_dimensions.length'] || '10', width: '20', height: '3', unit: 'CENTIMETER' }
+      })
+      assert.equal(view.all().some(el => el.type === 'form'), false, 'accepted snapshot has no correction form')
+    } finally { view?.app.unmount(); if (previousStorage === undefined) delete globalThis.localStorage; else globalThis.localStorage = previousStorage }
+  })
+}
+
+for (const status of ['success', 'under_review', 'submitted_unverified']) {
+  test(`fresh ${status} permission removes corrections and prevents a stale form retry`, async () => {
+    let saved = { ...snapshot('blocked'), context: { ...knownContext, warehouse_id: 'invalid-wh' }, required_fields: [correctionFields[1]] }, posts = 0
+    const api = { shopeeItems: async () => ({ data: { items: [structuredClone(item)] } }),
+      tiktokProductCreationSource: async () => ({ data: { data: saved } }), startTiktokProductCreation: async () => { posts++ } }
+    const view = mount(await loadComponent('../src/pages/ShopeeStock.vue', api), { unified: true, accountKey: 'shopee-agnishopbjm' })
+    try {
+      await tick(); view.button('Buat di TikTok').props.onClick(); await tick()
+      const form = view.all().find(el => el.type === 'form')
+      assert.ok(form)
+      saved = { ...snapshot(status), context: knownContext }
+      form.props.onSubmit({ preventDefault() {} }); await tick()
+      assert.equal(posts, 0)
+      assert.equal(view.all().some(el => el.type === 'form'), false)
+      assert.equal(view.button('Coba Lagi'), undefined)
+      assert.equal(view.button('Buat di TikTok'), undefined)
+    } finally { view.app.unmount() }
+  })
+}

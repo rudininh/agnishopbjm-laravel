@@ -106,6 +106,7 @@ class StockHubTiktokProductService
                 try {
                     $result = $submit($state['payload']);
                 } catch (StockHubTiktokProductRejected $e) {
+                    $state['required_fields'] = $this->gateway->contextFields();
                     $this->save($id, 'rejected', $state, $e->getMessage());
                     return $this->show($id);
                 }
@@ -122,6 +123,14 @@ class StockHubTiktokProductService
                 $this->save($id, 'submitted_unverified', $state, 'Terkirim, belum terverifikasi. '.($latest->remote_product_id ? 'Gunakan Periksa Status; produk tidak akan dikirim ulang.' : 'Periksa Seller Center; produk tidak akan dikirim ulang.'));
             } else {
                 $message = $e instanceof \DomainException ? $e->getMessage() : 'Pemeriksaan marketplace gagal. Periksa token, koneksi, dan proses marketplace lain lalu coba kembali.';
+                if ($row->status === 'preparing' && $e instanceof \DomainException) {
+                    $keys = match ($state['prepare'] ?? '') {
+                        'category', 'attributes' => ['category_id'],
+                        'warehouse' => ['warehouse_id'],
+                        default => [],
+                    };
+                    $state['required_fields'] = $this->gateway->contextFields($keys);
+                }
                 $this->save($id, 'blocked', $state, $message);
             }
         } finally {
@@ -165,9 +174,14 @@ class StockHubTiktokProductService
             $id = array_shift($scan['queue']);
             $target = $this->gateway->target($id, true);
             $state['progress']['scanned_products']++;
-            if ($this->gateway->duplicate($state['source'], $target)) {
+            $match = $this->gateway->duplicate($state['source'], $target);
+            if ($match === 'ambiguous') {
+                $this->save($row->id, 'blocked', $state, 'Produk dengan judul sama ditemukan, tetapi hubungan SKU belum terbukti. Periksa produk '.$id.' di Seller Center dan perbaiki judul atau relasi SKU sebelum mencoba kembali.');
+                return;
+            }
+            if ($match === 'exists') {
                 $state['result'] = ['product_id' => $id, 'skus' => [], 'published' => false];
-                $this->save($row->id, 'exists', $state, 'Produk/SKU atau judul serupa sudah ada di TikTok. Periksa katalog dan relasinya.');
+                $this->save($row->id, 'exists', $state, 'SKU produk sumber sudah ditemukan di TikTok. Periksa katalog dan relasinya.');
                 return;
             }
         } elseif (! $scan['complete']) {

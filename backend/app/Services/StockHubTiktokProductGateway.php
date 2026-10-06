@@ -80,11 +80,22 @@ class StockHubTiktokProductGateway
             $value = $this->decimal($input['package_dimensions'][$key] ?? $source['dimension']['package_'.$key] ?? null);
             $context['package_dimensions'][$key] = $value !== null && (float) $value > 0 ? $value : '';
         }
-        foreach (['category_id' => ['Kategori TikTok','category'], 'warehouse_id' => ['Gudang TikTok','text'], 'package_weight.value' => ['Berat paket','number'], 'package_dimensions.length' => ['Panjang paket','number'], 'package_dimensions.width' => ['Lebar paket','number'], 'package_dimensions.height' => ['Tinggi paket','number']] as $key => [$label,$type]) {
-            $v = data_get($context, $key);
-            if ($v === '' || ($type === 'number' && (float) $v <= 0)) { $fields[] = ['key' => $key, 'label' => $label, 'type' => $type, ...($type === 'number' ? ['unit' => str_contains($key, 'weight') ? 'kg' : 'cm'] : [])]; }
+        foreach ($this->contextFields() as $field) {
+            $v = data_get($context, $field['key']);
+            if ($v === '' || ($field['type'] === 'number' && (float) $v <= 0)) { $fields[] = $field; }
         }
         return ['context' => $context, 'required_fields' => $fields, 'target_shop_id' => $ctx['shop_id']];
+    }
+
+    public function contextFields(?array $keys = null): array
+    {
+        $fields = [];
+        foreach (['category_id' => ['Kategori TikTok','category'], 'warehouse_id' => ['Gudang TikTok','text'], 'package_weight.value' => ['Berat paket','number'], 'package_dimensions.length' => ['Panjang paket','number'], 'package_dimensions.width' => ['Lebar paket','number'], 'package_dimensions.height' => ['Tinggi paket','number']] as $key => [$label,$type]) {
+            if ($keys === null || in_array($key, $keys, true)) {
+                $fields[] = ['key' => $key, 'label' => $label, 'type' => $type, ...($type === 'number' ? ['unit' => str_contains($key, 'weight') ? 'kg' : 'cm'] : [])];
+            }
+        }
+        return $fields;
     }
 
     public function assertTargetShop(string $id): void
@@ -147,15 +158,15 @@ class StockHubTiktokProductGateway
         return $p;
     }
 
-    public function duplicate(array $source, array $target): bool
+    public function duplicate(array $source, array $target): ?string
     {
         $skus = array_map('strtoupper', array_column($source['variants'], 'seller_sku'));
         foreach ($target['skus'] as $sku) {
             $value = strtoupper(trim((string) $sku['seller_sku']));
-            if (in_array($value, $skus, true) || preg_match('/^INT-'.preg_quote($source['id'], '/').'(?:-|$)/i', $value)) { return true; }
+            if (in_array($value, $skus, true) || preg_match('/^INT-'.preg_quote($source['id'], '/').'(?:-|$)/i', $value)) { return 'exists'; }
         }
         $normalize = fn ($s) => mb_strtolower(preg_replace('/\s+/u', ' ', trim($s)));
-        return $normalize((string) ($target['title'] ?? '')) === $normalize($source['title']);
+        return $normalize((string) ($target['title'] ?? '')) === $normalize($source['title']) ? 'ambiguous' : null;
     }
 
     public function images(array $source): array
