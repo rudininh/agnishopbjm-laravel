@@ -1,5 +1,5 @@
 <template>
-  <section class="page-shell" :inert="cleanupBusy || mirrorBusy">
+  <section class="page-shell" :inert="cleanupBusy || conflictingBusy">
     <header class="page-header">
       <div>
         <p>Marketplace</p>
@@ -10,18 +10,18 @@
         <button
           class="bulk-sku-action"
           type="button"
-          :disabled="mirrorBusy || (loading || bulkSkuUpdating || repairBusy || missingSkuVariantCount === 0)"
+          :disabled="conflictingBusy || (loading || bulkSkuUpdating || repairBusy || missingSkuVariantCount === 0)"
           @click="openBulkSkuModal"
         >
           {{ bulkSkuUpdating ? 'Mengisi SKU...' : `Isi SKU Kosong (${missingSkuVariantCount})` }}
         </button>
-        <button class="bulk-sku-action" type="button" @click="openSkuRepair()" :disabled="mirrorBusy || (loading || bulkSkuUpdating || repairBusy || Boolean(updatingSkuKey) || Boolean(syncingItemId))">
+        <button class="bulk-sku-action" type="button" @click="openSkuRepair()" :disabled="conflictingBusy || (loading || bulkSkuUpdating || repairBusy || Boolean(updatingSkuKey) || Boolean(syncingItemId))">
           {{ repairBusy ? 'Memproses SKU...' : 'Perbaiki SKU Semua Produk & Varian' }}
         </button>
         <OrphanVariantCleanup :account-key="accountKey" :account-name="accountName"
-          :disabled="mirrorBusy || (loading || bulkSkuUpdating || repairBusy || Boolean(updatingSkuKey) || Boolean(syncingItemId) || Boolean(deletingVariantKey))"
+          :disabled="conflictingBusy || (loading || bulkSkuUpdating || repairBusy || Boolean(updatingSkuKey) || Boolean(syncingItemId) || Boolean(deletingVariantKey))"
           @busy="cleanupBusy = $event" @completed="loadData(false)" />
-        <button class="primary shopee" @click="syncAndLoad" :disabled="mirrorBusy || (loading || bulkSkuUpdating || repairBusy)">
+        <button class="primary shopee" @click="syncAndLoad" :disabled="conflictingBusy || (loading || bulkSkuUpdating || repairBusy)">
           {{ loading ? 'Memuat...' : 'Ambil Produk' }}
         </button>
       </div>
@@ -147,6 +147,7 @@
                       <small>Sales: {{ item.sales || 0 }} | Likes: {{ item.likes || 0 }}</small>
                       <span class="store-pill">{{ item.shop_name || 'Agni Shop Banjarmasin' }}</span>
                       <small v-if="productPresenceInfo(item).message" :class="['destination-info', { 'destination-missing': productPresenceInfo(item).missingCount > 0 }]">{{ productPresenceInfo(item).message }}</small>
+                      <small v-if="creationRowResult(creationRuns[String(item.item_id)])" class="destination-info">{{ creationRowResult(creationRuns[String(item.item_id)]).label }}</small>
                     </div>
                   </div>
                 </td>
@@ -178,12 +179,14 @@
                 </td>
                 <td>
                   <div class="actions">
+                    <button v-if="creationEligible(item)" :disabled="screenMutationBusy || conflictingBusy" @click="creation?.request(item)">Buat di TikTok</button>
+                    <button v-else-if="creationRuns[String(item.item_id)] && unified && accountKey === 'shopee-agnishopbjm'" :disabled="screenMutationBusy || conflictingBusy" @click="creation?.request(item, true)">{{ creationRuns[String(item.item_id)].status === 'submitted_unverified' ? 'Periksa Status' : 'Status Produk TikTok' }}</button>
                     <button title="Lihat varian" @click="toggle(item.item_id)">{{ expanded[item.item_id] ? 'Hide' : 'Show' }}</button>
-                    <button v-if="unified" :disabled="mirrorBusy || !mirrorTargets.length || loading || repairBusy || Boolean(updatingSkuKey) || Boolean(deletingVariantKey) || Boolean(syncingItemId)" @click="emit('mirror-stock', { type: 'product', view_account_key: accountKey, product_id: String(item.item_id) })">Samakan Stok Produk</button>
-                    <button title="Refresh produk ini" @click="syncProduct(item)" :disabled="mirrorBusy || (syncingItemId === item.item_id)">
+                    <button v-if="unified" :disabled="conflictingBusy || !mirrorTargets.length || loading || repairBusy || Boolean(updatingSkuKey) || Boolean(deletingVariantKey) || Boolean(syncingItemId)" @click="emit('mirror-stock', { type: 'product', view_account_key: accountKey, product_id: String(item.item_id) })">Samakan Stok Produk</button>
+                    <button title="Refresh produk ini" @click="syncProduct(item)" :disabled="conflictingBusy || (syncingItemId === item.item_id)">
                       {{ syncingItemId === item.item_id ? 'Memuat...' : 'Refresh' }}
                     </button>
-                    <button v-if="skuRepairRows(item).length" class="bulk-sku-action" @click="openSkuRepair(item)" :disabled="mirrorBusy || (repairBusy || Boolean(updatingSkuKey))">
+                    <button v-if="skuRepairRows(item).length" class="bulk-sku-action" @click="openSkuRepair(item)" :disabled="conflictingBusy || (repairBusy || Boolean(updatingSkuKey))">
                       Perbaiki SKU ({{ skuRepairRows(item).length }})
                     </button>
                   </div>
@@ -207,7 +210,7 @@
                         <small>SKU Template</small>
                         <span class="copy-line">
                           <code>{{ templateSku(item, model) }}</code>
-                          <button type="button" title="Copy SKU Template" @click="copyVariationCode(item, model)" :disabled="mirrorBusy || (!templateSku(item, model))">Copy</button>
+                          <button type="button" title="Copy SKU Template" @click="copyVariationCode(item, model)" :disabled="conflictingBusy || (!templateSku(item, model))">Copy</button>
                         </span>
                       </span>
                       <span>SKU ID: {{ model.model_id || '-' }}</span>
@@ -218,8 +221,8 @@
                       </span>
                       <strong>Stock {{ model.stock || 0 }}</strong>
                       <span class="variant-actions">
-                        <button v-if="unified" :disabled="mirrorBusy || !mirrorTargets.length || loading || repairBusy || Boolean(updatingSkuKey) || Boolean(deletingVariantKey) || Boolean(syncingItemId)" @click="emit('mirror-stock', { type: 'variant', view_account_key: accountKey, product_id: String(item.item_id), variant_id: String(model.model_id) })">Samakan Stok Varian</button>
-                        <button v-if="shopeeRealSku(model) !== templateSku(item, model)" class="update-sku-btn" @click="openSkuRepair(item, model)" :disabled="mirrorBusy || (repairBusy || Boolean(updatingSkuKey))">Perbaiki sesuai template</button>
+                        <button v-if="unified" :disabled="conflictingBusy || !mirrorTargets.length || loading || repairBusy || Boolean(updatingSkuKey) || Boolean(deletingVariantKey) || Boolean(syncingItemId)" @click="emit('mirror-stock', { type: 'variant', view_account_key: accountKey, product_id: String(item.item_id), variant_id: String(model.model_id) })">Samakan Stok Varian</button>
+                        <button v-if="shopeeRealSku(model) !== templateSku(item, model)" class="update-sku-btn" @click="openSkuRepair(item, model)" :disabled="conflictingBusy || (repairBusy || Boolean(updatingSkuKey))">Perbaiki sesuai template</button>
                         <input
                           v-model.trim="manualSkuDrafts[shopeeSkuKey(item, model)]"
                           class="manual-sku-input"
@@ -233,7 +236,7 @@
                           class="update-sku-btn"
                           title="Update SKU real Shopee dari input manual atau SKU template"
                           @click="updateMissingSku(item, model)"
-                          :disabled="mirrorBusy || (!canUpdateMissingSku(item, model) || updatingSkuKey === shopeeSkuKey(item, model))"
+                          :disabled="conflictingBusy || (!canUpdateMissingSku(item, model) || updatingSkuKey === shopeeSkuKey(item, model))"
                         >
                           {{ updatingSkuKey === shopeeSkuKey(item, model) ? 'Updating...' : 'Update SKU' }}
                         </button>
@@ -242,7 +245,7 @@
                           class="delete-variant-btn"
                           title="Hapus varian ini dari Shopee"
                           @click="openDeleteVariantModal(item, model)"
-                          :disabled="mirrorBusy || (!canDeleteShopeeVariant(item, model) || deletingVariantKey === shopeeSkuKey(item, model))"
+                          :disabled="conflictingBusy || (!canDeleteShopeeVariant(item, model) || deletingVariantKey === shopeeSkuKey(item, model))"
                         >
                           {{ deletingVariantKey === shopeeSkuKey(item, model) ? 'Deleting...' : 'Hapus' }}
                         </button>
@@ -260,9 +263,9 @@
         </table>
       </div>
       <div v-if="filteredItems.length" class="pagination">
-        <button type="button" :disabled="mirrorBusy || (currentPage === 1)" @click="setPage(currentPage - 1)">Prev</button>
+        <button type="button" :disabled="conflictingBusy || (currentPage === 1)" @click="setPage(currentPage - 1)">Prev</button>
         <span>Halaman {{ currentPage }} dari {{ totalPages }}</span>
-        <button type="button" :disabled="mirrorBusy || (currentPage === totalPages)" @click="setPage(currentPage + 1)">Next</button>
+        <button type="button" :disabled="conflictingBusy || (currentPage === totalPages)" @click="setPage(currentPage + 1)">Next</button>
       </div>
     </div>
 
@@ -282,8 +285,8 @@
         </div>
         <p v-if="repairModal.message" role="status">{{ repairModal.message }}</p>
         <div class="modal-actions">
-          <button class="ghost" @click="closeSkuRepair" :disabled="mirrorBusy || (repairBusy)">Tutup</button>
-          <button class="bulk-sku-action" @click="submitSkuRepair" :disabled="mirrorBusy || (repairBusy || !repairPending.length)">{{ repairBusy ? 'Memperbaiki...' : `Perbaiki ${repairPending.length} SKU` }}</button>
+          <button class="ghost" @click="closeSkuRepair" :disabled="conflictingBusy || (repairBusy)">Tutup</button>
+          <button class="bulk-sku-action" @click="submitSkuRepair" :disabled="conflictingBusy || (repairBusy || !repairPending.length)">{{ repairBusy ? 'Memperbaiki...' : `Perbaiki ${repairPending.length} SKU` }}</button>
         </div>
       </section>
     </div>
@@ -293,8 +296,8 @@
         <h2 id="bulk-sku-title">Isi semua SKU Shopee kosong?</h2>
         <p class="bulk-sku-copy">{{ missingSkuVariantCount }} varian akan memakai SKU template internal. SKU Shopee yang sudah terisi tidak akan diubah.</p>
         <div class="modal-actions">
-          <button type="button" class="ghost" @click="closeBulkSkuModal" :disabled="mirrorBusy || (bulkSkuUpdating)">Batal</button>
-          <button type="button" class="bulk-sku-action" @click="confirmBulkSkuUpdate" :disabled="mirrorBusy || (bulkSkuUpdating)">
+          <button type="button" class="ghost" @click="closeBulkSkuModal" :disabled="conflictingBusy || (bulkSkuUpdating)">Batal</button>
+          <button type="button" class="bulk-sku-action" @click="confirmBulkSkuUpdate" :disabled="conflictingBusy || (bulkSkuUpdating)">
             {{ bulkSkuUpdating ? 'Mengisi SKU...' : 'Isi Semua SKU' }}
           </button>
         </div>
@@ -329,12 +332,12 @@
         </label>
         <p v-if="deleteModal.error" class="modal-error">{{ deleteModal.error }}</p>
         <div class="modal-actions">
-          <button type="button" class="ghost" @click="closeDeleteVariantModal" :disabled="mirrorBusy || (Boolean(deletingVariantKey))">Batal</button>
+          <button type="button" class="ghost" @click="closeDeleteVariantModal" :disabled="conflictingBusy || (Boolean(deletingVariantKey))">Batal</button>
           <button
             type="button"
             class="danger-action"
             @click="confirmDeleteVariant"
-            :disabled="mirrorBusy || (deleteModal.confirmModelId !== deleteModal.modelId || Boolean(deletingVariantKey))"
+            :disabled="conflictingBusy || (deleteModal.confirmModelId !== deleteModal.modelId || Boolean(deletingVariantKey))"
           >
             {{ deletingVariantKey ? 'Menghapus...' : 'Hapus dari Shopee' }}
           </button>
@@ -342,14 +345,17 @@
       </section>
     </div>
   </section>
+  <StockHubTiktokProductCreation v-if="unified && accountKey === 'shopee-agnishopbjm'" ref="creation" :disabled="mirrorBusy || screenMutationBusy" @busy="creationBusy = $event" @run="applyCreationRun" />
 </template>
 
 <script setup>
 import OrphanVariantCleanup from '@/components/OrphanVariantCleanup.vue'
+import StockHubTiktokProductCreation from '@/components/StockHubTiktokProductCreation.vue'
 import { computed, onMounted, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { omnichannelService } from '@/services'
 import { shopeeTemplateSku, shopeeSkuRepairRows as skuRepairRows, shopeeAllSkuRepairRows } from './shopeeSkuRepairState'
 import { productPresenceInfo, compareProductPresence } from './marketplaceProductPresenceState'
+import { canCreateTiktokProduct, creationRowResult } from './stockHubTiktokProductCreationState'
 
 const props = defineProps({
   accountKey: { type: String, default: '' },
@@ -360,6 +366,17 @@ const props = defineProps({
 })
 
 const emit = defineEmits(['mirror-stock', 'busy'])
+const creation = ref(null), creationBusy = ref(false), creationRuns = reactive({})
+const conflictingBusy = computed(() => props.mirrorBusy || creationBusy.value)
+const screenMutationBusy = computed(() => Boolean(cleanupBusy.value || repairBusy.value || loading.value || updatingSkuKey.value || deletingVariantKey.value || syncingItemId.value || bulkSkuUpdating.value))
+const creationEligible = item => canCreateTiktokProduct({ unified: props.unified, accountKey: props.accountKey, item, run: creationRuns[String(item.item_id)] })
+function applyCreationRun(run) {
+  creationRuns[String(run.source_product_id)] = run
+  if (creationRowResult(run)?.accepted) {
+    const item = items.value.find(item => String(item.item_id) === String(run.source_product_id))
+    if (item) item.destination_presence = { ...item.destination_presence, 'tiktok-agnishopbjm': 'present' }
+  }
+}
 const accountParams = () => props.accountKey ? { account_key: props.accountKey } : {}
 const cleanupBusy = ref(false)
 const repairBusy = ref(false)
@@ -369,7 +386,7 @@ let repairMounted = true
 onBeforeUnmount(() => { repairMounted = false })
 const closeSkuRepair = () => { if (!repairBusy.value) repairModal.open = false }
 const openSkuRepair = async (item = null, model = null) => {
-  if (props.mirrorBusy) return
+  if (conflictingBusy.value) return
   if (repairBusy.value) return
   repairBusy.value = true
   const accountKey = props.accountKey || 'shopee-agnishopbjm'
@@ -398,7 +415,7 @@ const openSkuRepair = async (item = null, model = null) => {
   } finally { repairBusy.value = false }
 }
 const submitSkuRepair = async () => {
-  if (props.mirrorBusy) return
+  if (conflictingBusy.value) return
   if (repairBusy.value) return
   repairBusy.value = true
   const pending = [...repairPending.value]
@@ -628,7 +645,7 @@ const copyText = async (value) => {
 }
 const copyVariationCode = (item, model) => copyText(variationCode(item, model))
 const updateMissingSku = async (item, model) => {
-  if (props.mirrorBusy) return
+  if (conflictingBusy.value) return
   if (!canUpdateMissingSku(item, model)) return
 
   const key = shopeeSkuKey(item, model)
@@ -657,7 +674,7 @@ const updateMissingSku = async (item, model) => {
   }
 }
 const openDeleteVariantModal = (item, model) => {
-  if (props.mirrorBusy) return
+  if (conflictingBusy.value) return
   if (!canDeleteShopeeVariant(item, model)) {
     syncMessage.value = 'Varian ini tidak bisa dihapus dari tool karena model default atau varian terakhir.'
     syncTone.value = 'warning'
@@ -691,7 +708,7 @@ const removeDeletedVariantFromState = (itemId, modelId) => {
   item.stok = totalStock(item.models)
 }
 const confirmDeleteVariant = async () => {
-  if (props.mirrorBusy) return
+  if (conflictingBusy.value) return
   if (deleteModal.confirmModelId !== deleteModal.modelId || deletingVariantKey.value) return
 
   const key = `${deleteModal.itemId}:${deleteModal.modelId}`
@@ -820,7 +837,7 @@ const closeBulkSkuModal = () => {
 }
 
 const confirmBulkSkuUpdate = async () => {
-  if (props.mirrorBusy) return
+  if (conflictingBusy.value) return
   bulkSkuUpdating.value = true
   syncMessage.value = ''
 
@@ -846,7 +863,7 @@ const confirmBulkSkuUpdate = async () => {
   }
 }
 
-watch(() => Boolean(cleanupBusy.value || repairBusy.value || loading.value || updatingSkuKey.value || deletingVariantKey.value || syncingItemId.value || bulkSkuUpdating.value), value => emit('busy', value), { flush: 'sync', immediate: true })
+watch(() => Boolean(creationBusy.value || screenMutationBusy.value), value => emit('busy', value), { flush: 'sync', immediate: true })
 onBeforeUnmount(() => emit('busy', false))
 
 const loadData = async (syncMode = false) => {
@@ -855,6 +872,7 @@ const loadData = async (syncMode = false) => {
   try {
     const response = await omnichannelService.shopeeItems(syncMode, accountParams())
     items.value = response.data.items || []
+    for (const run of Object.values(creationRuns)) applyCreationRun(run)
     const syncResult = response.data.sync
 
     if (syncResult?.message) {
@@ -872,12 +890,12 @@ const loadData = async (syncMode = false) => {
 }
 
 const syncAndLoad = async () => {
-  if (props.mirrorBusy) return
+  if (conflictingBusy.value) return
   await loadData(true)
 }
 
 const syncProduct = async (item) => {
-  if (props.mirrorBusy) return
+  if (conflictingBusy.value) return
   syncingItemId.value = item.item_id
   syncMessage.value = ''
   try {
