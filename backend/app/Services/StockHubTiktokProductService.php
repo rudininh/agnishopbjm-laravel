@@ -93,7 +93,7 @@ class StockHubTiktokProductService
                 $this->save($id, $done ? 'submitting' : 'uploading', $state, $done ? 'Memeriksa sumber sebelum mengirim produk.' : 'Mengunggah gambar ke TikTok.');
             } elseif ($row->status === 'submitting') {
                 $fresh = $this->gateway->source($row->source_product_id);
-                if ($fresh !== $state['source']) { throw new \DomainException('Produk sumber berubah selama proses. Periksa data dan coba kembali.'); }
+                if (! $this->sameSource($fresh, $state['source'])) { throw new \DomainException('Produk sumber berubah selama proses. Periksa data dan coba kembali.'); }
                 if ($this->gateway->linked($row->source_product_id)) { $this->save($id, 'exists', $state, 'Produk sudah memiliki relasi TikTok.'); return $this->show($id); }
                 if ($this->catalogRevision->current() !== ($state['scan_revision'] ?? null)
                     || $this->attempts() !== $state['scan_attempts']) {
@@ -138,6 +138,16 @@ class StockHubTiktokProductService
             DB::table(self::GUARDS)->where('source_product_id', $row->source_product_id)->where('owner', $owner)->update(['owner' => null, 'expires_at' => null]);
         }
         return $this->show($id);
+    }
+
+    private function sameSource(array $fresh, array $saved): bool
+    {
+        // The gateway validates unique string IDs; only the variant list order may differ.
+        $byId = fn (array $a, array $b): int => strcmp($a['id'], $b['id']);
+        usort($fresh['variants'], $byId);
+        usort($saved['variants'], $byId);
+
+        return $fresh === $saved;
     }
 
     private function prepare(object $row, array $state): void

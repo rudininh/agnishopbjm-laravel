@@ -21,6 +21,7 @@ class StockHubTiktokProductTest extends TestCase
     private array $payload = [];
     private array $targetVersions = [];
     private array $transportError = [];
+    private array $sourceVariantIds = ['101', '102'];
     private string $base = '/api/marketplace/tiktok-product-creation';
 
     protected function setUp(): void
@@ -71,6 +72,9 @@ class StockHubTiktokProductTest extends TestCase
                 $item = ['item_id' => 10, 'shop_id' => $this->mode === 'wrong_shop' ? 22 : 11, 'item_status' => 'NORMAL', 'has_model' => true, 'item_name' => 'Full product', 'description' => 'Original description', 'weight' => '0.5', 'dimension' => ['package_length' => 10, 'package_width' => 20, 'package_height' => 3], 'image' => ['image_url_list' => ['https://img.test/main.jpg']]];
                 if ($this->mode === 'dimensions') { $item['weight'] = '0.08'; $item['dimension'] = ['package_length' => 0, 'package_width' => 0, 'package_height' => 0]; }
                 if ($this->mode === 'description') { unset($item['description']); }
+                if ($this->mode === 'drift_title') { $item['item_name'] = 'Changed title'; }
+                if ($this->mode === 'drift_main_image') { $item['image']['image_url_list'][0] = 'https://img.test/changed-main.jpg'; }
+                if ($this->mode === 'drift_dimension') { $item['dimension']['package_length'] = 11; }
                 return Http::response(['error' => '', 'response' => ['item_list' => [$item]]]);
             }
             if (str_contains($path, 'get_model_list')) {
@@ -81,7 +85,20 @@ class StockHubTiktokProductTest extends TestCase
                 if ($this->mode === 'conflicting_prefix') { $models[1]['model_sku'] = 'INT-11-BLUE'; }
                 if ($this->mode === 'missing_price') { unset($models[1]['price_info']); }
                 if ($this->mode === 'matching_sku') { $models[0]['model_sku'] = 'CUSTOM-GREEN'; }
-                return Http::response(['error' => '', 'response' => ['model' => $models, 'tier_variation' => [['name' => 'Color', 'option_list' => [['option' => 'Green', 'image' => ['image_url' => 'https://img.test/green.jpg']], ['option' => 'Blue', 'image' => ['image_url' => 'https://img.test/blue.jpg']]]]]]]);
+                [$models[0]['model_id'], $models[1]['model_id']] = $this->sourceVariantIds;
+                $tiers = [['name' => 'Color', 'option_list' => [['option' => 'Green', 'image' => ['image_url' => 'https://img.test/green.jpg']], ['option' => 'Blue', 'image' => ['image_url' => 'https://img.test/blue.jpg']]]]];
+                if ($this->mode === 'drift_sku') { $models[1]['model_sku'] = 'INT-10-CHANGED'; }
+                if ($this->mode === 'drift_stock') { $models[0]['stock_info_v2']['summary_info']['total_available_stock'] = 1; }
+                if ($this->mode === 'drift_variant_id') { $models[1]['model_id'] = '103'; }
+                if ($this->mode === 'drift_variant_image') { $tiers[0]['option_list'][1]['image']['image_url'] = 'https://img.test/changed-blue.jpg'; }
+                if ($this->mode === 'drift_attribute') { $tiers[0]['option_list'][1]['option'] = 'Changed Blue'; }
+                if ($this->mode === 'drift_removed_variant') { array_pop($models); }
+                if ($this->mode === 'drift_added_variant') {
+                    $models[] = [...$models[1], 'model_id' => '103', 'model_sku' => 'INT-10-RED', 'model_name' => 'Red', 'tier_index' => [2]];
+                    $tiers[0]['option_list'][] = ['option' => 'Red'];
+                }
+                if ($this->mode === 'source_order' || str_starts_with($this->mode, 'drift')) { $models = array_reverse($models); }
+                return Http::response(['error' => '', 'response' => ['model' => $models, 'tier_variation' => $tiers]]);
             }
             $data = [];
             if ($path === '/product/202309/categories') { $data = ['categories' => [['id' => '600', 'parent_id' => '0', 'local_name' => 'Clothing', 'is_leaf' => $this->mode !== 'parent_category', 'permission_statuses' => [$this->mode === 'category_denied' ? 'INVITE_ONLY' : 'AVAILABLE']]]]; }
@@ -460,10 +477,24 @@ class StockHubTiktokProductTest extends TestCase
         return array_map(fn ($mode) => [$mode], ['complete', 'wrong_price', 'wrong_stock', 'wrong_sku']);
     }
 
-    public function test_complete_product_copies_all_variants_images_prices_and_zero_stock_without_changing_stock_master(): void
+    #[\PHPUnit\Framework\Attributes\DataProvider('sourceVariantOrder')]
+    public function test_complete_product_copies_all_variants_images_prices_and_zero_stock_without_changing_stock_master(bool $reverseFreshVariants, array $variantIds): void
     {
-        $run = $this->finish($this->start());
+        $this->sourceVariantIds = $variantIds;
+        DB::table('marketplace_listings')->where('account_key', 'shopee-agnishopbjm')->update(['remote_variant_id' => $variantIds[0]]);
+        $run = $this->start();
+        $preparedSource = null;
+        if ($reverseFreshVariants) {
+            while ($run['stage'] !== 'submitting' && $run['can_continue']) { $run = $this->postJson($this->base.'/runs/'.$run['run_id'].'/step')->assertOk()->json('data'); }
+            $this->assertSame('submitting', $run['stage']);
+            $preparedSource = json_decode(DB::table('stock_hub_tiktok_product_runs')->where('id', $run['run_id'])->value('state'), true)['source'];
+            $this->mode = 'source_order';
+        }
+        $run = $this->finish($run);
         $this->assertSame('success', $run['status'], json_encode([$run, Http::recorded()->map(fn ($x) => parse_url($x[0]->url(), PHP_URL_PATH)), json_decode(DB::table('stock_hub_tiktok_product_runs')->value('state'), true)['prepare'] ?? null]));
+        if ($preparedSource !== null) {
+            $this->assertSame($preparedSource, json_decode(DB::table('stock_hub_tiktok_product_runs')->where('id', $run['run_id'])->value('state'), true)['source']);
+        }
         $this->assertSame('200', $run['remote_product_id']);
         $this->assertSame(['150000','175000'], array_column(array_column($this->payload['skus'], 'price'), 'amount'));
         $this->assertSame([0,7], array_map(fn ($s) => $s['inventory'][0]['quantity'], $this->payload['skus']));
@@ -501,6 +532,15 @@ class StockHubTiktokProductTest extends TestCase
         $this->assertSame($run['run_id'], $this->start()['run_id']);
         $this->postJson($this->base.'/runs/'.$run['run_id'].'/step')->assertSuccessful();
         $this->assertSame(1, $this->creates);
+    }
+
+    public static function sourceVariantOrder(): array
+    {
+        return [
+            'unchanged order' => [false, ['101', '102']],
+            'reversed final source order' => [true, ['101', '102']],
+            'reversed IDs above integer range' => [true, ['184467440737095516161', '184467440737095516162']],
+        ];
     }
 
     public function test_missing_context_is_actionable_and_safe_to_retry(): void
@@ -818,12 +858,22 @@ class StockHubTiktokProductTest extends TestCase
         $this->assertSame(2, $this->creates);
     }
 
-    public function test_running_guard_and_source_drift_prevent_new_creation(): void
+    #[\PHPUnit\Framework\Attributes\DataProvider('sourceChanges')]
+    public function test_running_guard_and_source_drift_prevent_new_creation(string $mode): void
     {
         $run = $this->start(); $this->assertSame($run['run_id'], $this->start()['run_id']);
         while ($run['stage'] !== 'submitting' && $run['can_continue']) { $run = $this->postJson($this->base.'/runs/'.$run['run_id'].'/step')->assertOk()->json('data'); }
-        $this->mode = 'drift';
-        $this->assertSame('blocked', $this->finish($run)['status']);
+        $this->assertSame('submitting', $run['stage']);
+        $this->mode = $mode;
+        $run = $this->finish($run);
+        $this->assertSame('blocked', $run['status']);
+        $this->assertStringContainsString('Produk sumber berubah', $run['message']);
+        $this->assertNull(DB::table('stock_hub_tiktok_product_runs')->where('id', $run['run_id'])->value('attempted_at'));
         $this->assertSame(0, $this->creates);
+    }
+
+    public static function sourceChanges(): array
+    {
+        return array_map(fn ($mode) => [$mode], ['drift', 'drift_sku', 'drift_stock', 'drift_variant_id', 'drift_variant_image', 'drift_attribute', 'drift_removed_variant', 'drift_added_variant', 'drift_title', 'drift_main_image', 'drift_dimension']);
     }
 }
