@@ -38,7 +38,7 @@ Read-only live metadata confirmed category 601306 is AVAILABLE, leaf Hijab Insta
 
 **Interfaces:** Preserve all public controller, gateway, and service signatures. Keep context input keys unchanged. Gateway may expose CATEGORY_VERSION = 'v2' for service comparison; the server controls this version.
 
-- [ ] **Step 1: Add failing HTTP-boundary regressions.** Extend existing fake modes so V1/missing version metadata differs from V2; the assertions must observe results as well as outgoing query/body. Cover categories returning only V2 options, a V1-only selection blocking before attempted_at/create, attributes requiring V2 to pass, outgoing create body including v2 and correctly signed body, safe known-code rejection text for integer/string 12052217, and recovery of unattempted legacy state blocking before create. Keep existing unknown-code rejection and uncertain/accepted no-replay tests.
+- [x] **Step 1: Add failing HTTP-boundary regressions.** Extend existing fake modes so V1/missing version metadata differs from V2; the assertions must observe results as well as outgoing query/body. Cover categories returning only V2 options, a V1-only selection blocking before attempted_at/create, attributes requiring V2 to pass, outgoing create body including v2 and correctly signed body, safe known-code rejection text for integer/string 12052217, and recovery of unattempted legacy state blocking before create. Keep existing unknown-code rejection and uncertain/accepted no-replay tests.
 
 Example assertions at the real HTTP boundary:
 
@@ -52,9 +52,9 @@ $this->assertSame(0, $this->creates);
 
 For fake catalog mode use leaf id 601306 for V2 and 601307 for V1/missing; start with 601306 for success and 601307 to prove V1-only selections are blocked. Required-attribute fake mode returns an optional list only for query v2 and a required unsupported attribute otherwise. For legacy-state tests prepare a normal run, remove saved validated_category_version (and optionally payload category_version), and continue without issuing HTTP product create.
 
-- [ ] **Step 2: Run new tests before production edits and record expected red failures.** Use `php vendor/bin/phpunit tests/Feature/StockHubTiktokProductTest.php --filter 'v2|category_version' --no-progress` in backend. Capture output in this plan's ignored workspace/report.
+- [x] **Step 2: Run new tests before production edits and record expected red failures.** Use `php vendor/bin/phpunit tests/Feature/StockHubTiktokProductTest.php --filter 'v2|category_version' --no-progress` in backend. Capture output in this plan's ignored workspace/report.
 
-- [ ] **Step 3: Implement minimal V2 consistency.** Add gateway `public const CATEGORY_VERSION = 'v2';` and pass it to metadata queries and create payload:
+- [x] **Step 3: Implement minimal V2 consistency.** Add gateway `public const CATEGORY_VERSION = 'v2';` and pass it to metadata queries and create payload:
 
 ```php
 ['locale' => 'id-ID', 'category_version' => self::CATEGORY_VERSION]
@@ -75,5 +75,15 @@ throw new StockHubTiktokProductRejected($message);
 
 Preserve the existing HTTP status/returned-identity gate and rejection handling. Do not propagate raw remote message text. Do not change retry policies or generic transport semantics.
 
-- [ ] **Step 4: Verify focused and affected suites.** Run entire StockHubTiktokProductTest, then creation/mirror/registry/presence/publication relevant suite. Existing invalid category, unknown permissions, nonleaf, required attributes, explicit retry, permanent marker, and uncertain no-replay cases must pass. Run PHP lint on changed production files; inspect diff for scope and accidental secrets.
-- [ ] **Step 5: Commit the source/tests and return report.** Report red/green commands and exact counts, files changed, commit, self-review findings, and any concerns. Independent reviewer checks specification and code quality. Coordinator performs one full backend run on final stable code, read-only live metadata verification, records durable project memory, and updates this plan's completion evidence. No product is automatically created in the live shop.
+- [x] **Step 4: Verify focused and affected suites.** Run entire StockHubTiktokProductTest, then creation/mirror/registry/presence/publication relevant suite. Existing invalid category, unknown permissions, nonleaf, required attributes, explicit retry, permanent marker, and uncertain no-replay cases must pass. Run PHP lint on changed production files; inspect diff for scope and accidental secrets.
+- [x] **Step 5: Commit the source/tests and return report.** Report red/green commands and exact counts, files changed, commit, self-review findings, and any concerns. Independent reviewer checks specification and code quality. Coordinator performs one full backend run on final stable code, read-only live metadata verification, records durable project memory, and updates this plan's completion evidence. No product is automatically created in the live shop.
+
+
+## Completion evidence
+
+- Implementation: 81d559f, four backend source/test files only.
+- TDD: 16 tests / 256 assertions / 12 expected red failures; green 16 / 445. Focused full creation class 178 / 3356; affected suites 254 / 3623.
+- Final full backend: `php vendor/bin/phpunit --no-progress`, exit 0, 679 tests / 5638 assertions, clean output.
+- Independent scoped specification and quality review approved with no findings. PHP lint and diff checks passed.
+- Read-only real gateway and served local categories endpoint verified V2 metadata for available leaf Hijab Instan; rebuilt saved-source payload contains v2 and all 22 variants. Saved run hash unchanged and attempted_at preserved. No live product create or publish request.
+- Durable architecture fact recorded in project memory. Existing feature branch retained without push or merge; no frontend asset change required.
