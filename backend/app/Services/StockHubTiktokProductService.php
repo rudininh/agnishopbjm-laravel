@@ -73,7 +73,14 @@ class StockHubTiktokProductService
                 return $this->show($id);
             }
             $this->lease->acquire();
-            if (isset($state['target_shop_id'])) { $this->gateway->assertTargetShop($state['target_shop_id']); }
+            if (isset($state['target_shop_id'])) {
+                try {
+                    $this->gateway->assertTargetShop($state['target_shop_id']);
+                } catch (\Throwable $e) {
+                    if ($row->status !== 'uploading') { throw $e; }
+                    throw new \DomainException('Otorisasi akun TikTok untuk gambar gagal. Periksa akun dan token lalu coba kembali.');
+                }
+            }
             if ($row->attempted_at) {
                 $result = $this->gateway->verify($state['source'], $state['context'], $row->remote_product_id);
                 $state['result'] = $result;
@@ -123,6 +130,9 @@ class StockHubTiktokProductService
                 $this->save($id, 'submitted_unverified', $state, 'Terkirim, belum terverifikasi. '.($latest->remote_product_id ? 'Gunakan Periksa Status; produk tidak akan dikirim ulang.' : 'Periksa Seller Center; produk tidak akan dikirim ulang.'));
             } else {
                 $message = $e instanceof \DomainException ? $e->getMessage() : 'Pemeriksaan marketplace gagal. Periksa token, koneksi, dan proses marketplace lain lalu coba kembali.';
+                if ($row->status === 'uploading') {
+                    $message = 'Gambar '.(($state['progress']['uploaded_images'] ?? 0) + 1).'/'.($state['progress']['total_images'] ?? 0).': '.$message;
+                }
                 if ($row->status === 'preparing' && $e instanceof \DomainException) {
                     $keys = match ($state['prepare'] ?? '') {
                         'category', 'attributes' => ['category_id'],

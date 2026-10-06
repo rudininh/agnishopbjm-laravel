@@ -2,6 +2,8 @@
 
 namespace App\Services;
 
+use Illuminate\Http\Client\ConnectionException;
+use Illuminate\Http\Client\RequestException;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Schema;
@@ -248,12 +250,18 @@ class StockHubTiktokProductGateway
 
     public function upload(array $image): string
     {
-        $this->imageUrl($image['url']);
         try {
-            $r = Http::timeout(6)->withOptions(['allow_redirects' => false])->get($image['url']);
-            $this->require($r->successful() && str_starts_with(strtolower($r->header('Content-Type')), 'image/') && strlen($r->body()) > 0 && strlen($r->body()) <= 10 * 1024 * 1024, 'Gambar sumber tidak dapat diunduh atau terlalu besar.');
-            return $this->transport->uploadTiktokImage($r->body(), $image['use_case']);
-        } catch (\Throwable) { throw new \DomainException('Gambar sumber gagal diunduh/diunggah. Periksa gambar lalu coba kembali.'); }
+            $this->imageUrl($image['url']);
+            $r = Http::timeout(6)->withOptions(['allow_redirects' => false])->retry(3, 250, fn ($e) =>
+                $e instanceof ConnectionException || ($e instanceof RequestException
+                    && (in_array($e->response->status(), [408, 429], true) || $e->response->serverError())), throw: false
+            )->get($image['url']);
+        } catch (\Throwable) {
+            throw new \DomainException('Gagal mengunduh gambar sumber. Periksa koneksi dan gambar lalu coba kembali.');
+        }
+        $this->require($r->successful() && str_starts_with(strtolower($r->header('Content-Type')), 'image/') && strlen($r->body()) > 0 && strlen($r->body()) <= 10 * 1024 * 1024,
+            'Gagal mengunduh gambar sumber (HTTP '.$r->status().'). Periksa koneksi dan gambar lalu coba kembali.');
+        return $this->transport->uploadTiktokImage($r->body(), $image['use_case']);
     }
 
     public function payload(array $source, array $context, array $images): array

@@ -2,6 +2,8 @@
 
 namespace App\Services;
 
+use Illuminate\Http\Client\ConnectionException;
+use Illuminate\Http\Client\RequestException;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
@@ -110,24 +112,34 @@ class MarketplaceStockMirrorTransport
 
     public function uploadTiktokImage(string $bytes, string $useCase): string
     {
-        $context = $this->context('tiktok-agnishopbjm', false, 6);
-        $config = $context['config'];
-        $path = '/product/202309/images/upload';
-        $query = ['app_key' => $config['app_key'], 'timestamp' => time()];
-        ksort($query);
-        $base = $config['app_secret'].$path;
-        foreach ($query as $key => $value) { $base .= $key.$value; }
-        // TikTok multipart signatures exclude the multipart body.
-        $query['sign'] = hash_hmac('sha256', $base.$config['app_secret'], $config['app_secret']);
         try {
+            $context = $this->context('tiktok-agnishopbjm', false, 6);
+        } catch (\Throwable) {
+            throw new \DomainException('Otorisasi akun TikTok untuk gambar gagal. Periksa akun dan token lalu coba kembali.');
+        }
+        try {
+            $config = $context['config'];
+            $path = '/product/202309/images/upload';
+            $query = ['app_key' => $config['app_key'], 'timestamp' => time()];
+            ksort($query);
+            $base = $config['app_secret'].$path;
+            foreach ($query as $key => $value) { $base .= $key.$value; }
+            // TikTok multipart signatures exclude the multipart body.
+            $query['sign'] = hash_hmac('sha256', $base.$config['app_secret'], $config['app_secret']);
             $response = Http::timeout(12)->withHeaders(['x-tts-access-token' => $context['token']])
+                ->retry(3, 250, fn ($e) => $e instanceof ConnectionException || ($e instanceof RequestException
+                    && (in_array($e->response->status(), [408, 429], true) || $e->response->serverError())), throw: false)
                 ->attach('data', $bytes, 'product.jpg')->post(rtrim($config['api_host'], '/').$path.'?'.http_build_query($query), ['use_case' => $useCase]);
             $json = $response->json();
-            if (! $response->successful() || (string) ($json['code'] ?? '') !== '0' || ! is_string($json['data']['uri'] ?? null) || $json['data']['uri'] === '') { throw new \RuntimeException(); }
-            return $json['data']['uri'];
         } catch (\Throwable) {
-            throw new \RuntimeException('Upload gambar TikTok gagal.');
+            throw new \DomainException('Upload gambar TikTok gagal. Periksa koneksi lalu coba kembali.');
         }
+        if (! $response->successful() || ! in_array($json['code'] ?? null, [0, '0'], true) || ! is_string($json['data']['uri'] ?? null) || $json['data']['uri'] === '') {
+            $code = $json['code'] ?? null;
+            $code = is_int($code) || is_string($code) ? filter_var($code, FILTER_VALIDATE_INT) : false;
+            throw new \DomainException('Upload gambar TikTok gagal (HTTP '.$response->status().($code === false ? '' : ', kode '.$code).'). Periksa gambar dan akun lalu coba kembali.');
+        }
+        return $json['data']['uri'];
     }
 
     private function request(array $context, bool $shopee, string $method, string $path, array $query = [], ?array $body = null, bool $creation = false, int $timeout = 30): array

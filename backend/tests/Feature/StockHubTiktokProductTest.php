@@ -22,6 +22,12 @@ class StockHubTiktokProductTest extends TestCase
     private array $targetVersions = [];
     private array $transportError = [];
     private array $sourceVariantIds = ['101', '102'];
+    private ?string $transferStage = null;
+    private array $transferFailures = [];
+    private int $transferAttempts = 0;
+    private array $transferProgress = [];
+    private ?string $failedReadPath = null;
+    private int $failedReadAttempts = 0;
     private string $base = '/api/marketplace/tiktok-product-creation';
 
     protected function setUp(): void
@@ -43,6 +49,30 @@ class StockHubTiktokProductTest extends TestCase
         DB::table('marketplace_listings')->insert(['stock_master_id' => 1, 'account_key' => 'shopee-agnishopbjm', 'channel' => 'shopee', 'remote_product_id' => '10', 'remote_variant_id' => '101', 'remote_identity_hash' => hash('sha256', 'source'), 'seller_sku' => 'INT-10-GREEN']);
         Http::fake(function ($r) {
             $path = parse_url($r->url(), PHP_URL_PATH);
+            if ($path === $this->failedReadPath) {
+                $this->failedReadAttempts++;
+                return Http::response(['code' => 500, 'message' => 'secret signed URL'], 502);
+            }
+            if (($this->transferStage === 'download' && $path === '/green.jpg')
+                || ($this->transferStage === 'upload' && str_ends_with($path, '/images/upload'))) {
+                $this->transferAttempts++;
+                if ($this->transferStage === 'upload') {
+                    // Assert the actual outgoing multipart data before Laravel records a failed connection without parsed files.
+                    $this->assertTrue($r->hasFile('data', 'image-bytes', 'product.jpg'));
+                    $this->assertSame('ATTRIBUTE_IMAGE', array_column($r->data(), 'contents', 'name')['use_case']);
+                }
+                $saved = json_decode(DB::table('stock_hub_tiktok_product_runs')->value('state'), true);
+                $this->transferProgress[] = [$saved['progress']['uploaded_images'], $saved['images'][0]['uri'], $saved['images'][1]['uri'] ?? null];
+                $failure = array_shift($this->transferFailures);
+                if ($failure === null) { $this->transferStage = null; }
+                elseif ($failure === 'connection') { return Http::failedConnection('https://secret.test/?access_token=secret&sign=secret'); }
+                elseif ($failure === 'body') { return Http::response('secret non-image body', 200, ['Content-Type' => 'text/html']); }
+                elseif ($failure === 'empty') { return Http::response('', 200, ['Content-Type' => 'image/jpeg']); }
+                elseif ($failure === 'missing_uri') { return Http::response(['code' => 0, 'data' => [], 'message' => 'secret']); }
+                elseif ($failure === 'malformed_code') { return Http::response('{"code":0.0,"data":{"uri":"invalid-uri"},"message":"secret"}'); }
+                elseif ($failure === 'api_rejection') { return Http::response(['code' => 36009004, 'message' => 'secret']); }
+                else { return Http::response(['code' => 36009004, 'message' => 'secret'], $failure, ['Content-Type' => 'image/jpeg']); }
+            }
             if ($this->mode === 'transport_error') { return Http::response($this->transportError); }
             if (preg_match('~/product/202309/products/([0-9]+)$~', $path, $match) && isset($this->targetVersions[$match[1]])) {
                 parse_str(parse_url($r->url(), PHP_URL_QUERY), $query);
@@ -159,6 +189,140 @@ class StockHubTiktokProductTest extends TestCase
         for ($i = 0; $i < 40 && $run['can_continue']; $i++) { $run = $this->postJson($this->base.'/runs/'.$run['run_id'].'/step')->assertSuccessful()->json('data'); }
         $this->assertFalse($run['can_continue']);
         return $run;
+    }
+
+    private function prepareImageTransfer(string $stage, array $failures): array
+    {
+        $run = $this->start();
+        while ($run['can_continue'] && $run['progress']['uploaded_images'] < 1) {
+            $run = $this->postJson($this->base.'/runs/'.$run['run_id'].'/step')->assertOk()->json('data');
+        }
+        $this->assertSame('uploading', $run['stage']);
+        $this->assertSame(1, $run['progress']['uploaded_images']);
+        $this->transferStage = $stage;
+        $this->transferFailures = $failures;
+        return $run;
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('transientImageTransfers')]
+    public function test_image_transfer_recovers_transient_failures_before_one_product_create(string $stage, array $failures): void
+    {
+        $run = $this->finish($this->prepareImageTransfer($stage, $failures));
+        $this->assertSame('success', $run['status']);
+        $this->assertSame(count($failures) + 1, $this->transferAttempts);
+        $this->assertSame(1, $this->creates);
+        $this->assertSame(3, $run['progress']['uploaded_images']);
+        foreach ($this->transferProgress as [$uploaded, $previousUri, $currentUri]) {
+            $this->assertSame(1, $uploaded);
+            $this->assertNotEmpty($previousUri);
+            $this->assertNull($currentUri);
+        }
+        foreach (Http::recorded(fn ($r) => parse_url($r->url(), PHP_URL_PATH) === '/product/202309/images/upload') as [$request, $response]) {
+            parse_str(parse_url($request->url(), PHP_URL_QUERY), $query);
+            $this->assertArrayNotHasKey('shop_cipher', $query);
+            $this->assertSame(hash_hmac('sha256', 'secret/product/202309/images/uploadapp_keyapptimestamp'.$query['timestamp'].'secret', 'secret'), $query['sign']);
+            $this->assertTrue($request->hasHeader('x-tts-access-token', 'tiktok-secret'));
+            if ($response !== null) {
+                $this->assertTrue($request->hasFile('data', 'image-bytes', 'product.jpg'));
+                $this->assertContains(array_column($request->data(), 'contents', 'name')['use_case'], ['MAIN_IMAGE', 'ATTRIBUTE_IMAGE']);
+            }
+        }
+    }
+
+    public static function transientImageTransfers(): array
+    {
+        return [
+            ['download', ['connection', 502]], ['upload', ['connection', 502]],
+            ['download', [408]], ['upload', [429]],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('exhaustedImageTransfers')]
+    public function test_image_transfer_stops_after_three_attempts_with_safe_stage_and_image_progress(string $stage, array $failures, string $message): void
+    {
+        $run = $this->finish($this->prepareImageTransfer($stage, $failures));
+        $this->assertSame(3, $this->transferAttempts);
+        $this->assertBlockedImageTransfer($run, $message);
+    }
+
+    public static function exhaustedImageTransfers(): array
+    {
+        return [
+            ['download', [502, 502, 502], 'unduh gambar sumber'],
+            ['upload', [502, 502, 502], 'Upload gambar TikTok'],
+            ['download', ['connection', 'connection', 'connection'], 'unduh gambar sumber'],
+            ['upload', ['connection', 'connection', 'connection'], 'Upload gambar TikTok'],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('permanentImageTransfers')]
+    public function test_image_transfer_does_not_retry_deterministic_failures(string $stage, mixed $failure, string $message): void
+    {
+        $run = $this->finish($this->prepareImageTransfer($stage, [$failure]));
+        $this->assertSame(1, $this->transferAttempts);
+        $this->assertBlockedImageTransfer($run, $message);
+    }
+
+    public static function permanentImageTransfers(): array
+    {
+        return [
+            ['download', 404, 'unduh gambar sumber'], ['download', 301, 'unduh gambar sumber'],
+            ['download', 'body', 'unduh gambar sumber'], ['download', 'empty', 'unduh gambar sumber'],
+            ['upload', 400, 'Upload gambar TikTok'], ['upload', 'api_rejection', 'Upload gambar TikTok'],
+            ['upload', 'missing_uri', 'Upload gambar TikTok'], ['upload', 'malformed_code', 'Upload gambar TikTok'],
+        ];
+    }
+
+    private function assertBlockedImageTransfer(array $run, string $message): void
+    {
+        $this->assertSame('blocked', $run['status']);
+        $this->assertStringContainsString('Gambar 2/3:', $run['message']);
+        $this->assertStringContainsString($message, $run['message']);
+        $this->assertSame(1, $run['progress']['uploaded_images']);
+        $this->assertSame(0, $this->creates);
+        $this->assertNull(DB::table('stock_hub_tiktok_product_runs')->value('attempted_at'));
+        $state = json_decode(DB::table('stock_hub_tiktok_product_runs')->value('state'), true);
+        $this->assertNotEmpty($state['images'][0]['uri']);
+        $this->assertArrayNotHasKey('uri', $state['images'][1]);
+        $this->assertStringNotContainsString('secret', json_encode($run));
+        $this->assertStringNotContainsString('https://', $run['message']);
+    }
+
+    public function test_image_transfer_account_failure_is_a_safe_authorization_stage_message(): void
+    {
+        $run = $this->prepareImageTransfer('upload', []);
+        DB::table('tiktok_tokens')->update(['access_token_expire_at' => now()->subMinute()]);
+        $run = $this->finish($run);
+        $this->assertBlockedImageTransfer($run, 'Otorisasi akun TikTok');
+        $this->assertSame(0, $this->transferAttempts);
+        try {
+            app(\App\Services\MarketplaceStockMirrorTransport::class)->uploadTiktokImage('image-bytes', 'MAIN_IMAGE');
+            $this->fail('Expired account must block asset uploads.');
+        } catch (\DomainException $e) {
+            $this->assertStringContainsString('Otorisasi akun TikTok', $e->getMessage());
+            $this->assertStringNotContainsString('secret', $e->getMessage());
+        }
+    }
+
+    public function test_image_transfer_authorization_http_failure_is_not_retried(): void
+    {
+        $run = $this->prepareImageTransfer('upload', []);
+        DB::table('tiktok_tokens')->update(['shop_id' => '']);
+        $this->failedReadPath = '/authorization/202309/shops';
+        $run = $this->finish($run);
+        $this->assertBlockedImageTransfer($run, 'Otorisasi akun TikTok');
+        $this->assertSame(1, $this->failedReadAttempts);
+        $this->assertSame(0, $this->transferAttempts);
+    }
+
+    public function test_image_transfer_retry_does_not_apply_to_catalog_http_reads(): void
+    {
+        $this->failedReadPath = '/product/202309/categories';
+        $run = $this->finish($this->start());
+        $this->assertSame('blocked', $run['status']);
+        $this->assertSame(1, $this->failedReadAttempts);
+        $this->assertSame(0, $this->creates);
+        $this->assertStringNotContainsString('secret', json_encode($run));
     }
 
     private function approvedCatalogVersions(bool $matching = false, bool $nullSku = false): array
