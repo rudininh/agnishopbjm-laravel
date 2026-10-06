@@ -162,6 +162,13 @@ class MarketplaceStockMirrorTransport
             $json = json_decode($response->body(), true, 512, JSON_BIGINT_AS_STRING);
             $errorCode = is_array($json) ? filter_var($json['code'] ?? null, FILTER_VALIDATE_INT) : false;
             $returnedIdentity = is_array($json) && (! empty($json['data']['product_id']) || ! empty($json['data']['id']));
+            if (! $shopee && ! $creation && $response->successful() && $method === 'GET'
+                && preg_match('~^/product/202309/products/[0-9]+$~D', $path)
+                && ($query['return_under_review_version'] ?? null) === 'true'
+                && is_array($json) && in_array($json['code'] ?? null, [12052547, '12052547'], true)
+                && (! isset($json['data']) || $json['data'] === [])) {
+                throw new StockHubTiktokReviewVersionUnavailable();
+            }
             if ($creation && $response->status() < 500 && $errorCode !== false && $errorCode !== 0 && ! $returnedIdentity) {
                 throw new StockHubTiktokProductRejected('TikTok menolak produk (kode '.(int) $json['code'].'). Periksa kategori, atribut, dan data produk.');
             }
@@ -173,7 +180,7 @@ class MarketplaceStockMirrorTransport
             }
 
             return $json[$shopee ? 'response' : 'data'];
-        } catch (StockHubTiktokProductRejected $e) {
+        } catch (StockHubTiktokProductRejected|StockHubTiktokReviewVersionUnavailable $e) {
             throw $e;
         } catch (\Throwable) {
             // Never expose a client exception: its URL contains signed credentials.

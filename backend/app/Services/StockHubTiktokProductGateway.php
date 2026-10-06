@@ -149,9 +149,33 @@ class StockHubTiktokProductGateway
 
     public function target(string $id, bool $review = false): array
     {
+        return $this->targetSnapshot($id, $review);
+    }
+
+    private function targetSnapshot(string $id, bool $review, bool $forVerification = false): array
+    {
         $message = 'Identitas SKU produk TikTok '.$id.' belum lengkap atau berbeda antar versi. Periksa produk ini di Seller Center lalu coba kembali.';
         $ctx = $this->transport->context(self::TARGET, false, 6);
-        $data = $this->call(self::TARGET, 'GET', '/product/202309/products/'.$id, $review ? ['return_under_review_version' => 'true'] : []);
+        try {
+            $data = $this->call(self::TARGET, 'GET', '/product/202309/products/'.$id, $review ? ['return_under_review_version' => 'true'] : []);
+        } catch (StockHubTiktokReviewVersionUnavailable) {
+            $this->require($review, $message);
+            $this->assertTargetShop($ctx['shop_id']);
+            $data = $this->call(self::TARGET, 'GET', '/product/202309/products/'.$id);
+            $this->assertTargetShop($ctx['shop_id']);
+            $normal = $data['product'] ?? $data;
+            $this->require(is_array($normal), $message);
+            $this->targetSkuIds($normal, $id, $ctx['shop_id'], $message);
+            $this->require(is_string($normal['title'] ?? null) && preg_match('/\S/u', $normal['title']) === 1, $message);
+            foreach ($normal['skus'] as $sku) {
+                // An explicit empty seller SKU means unassigned; omitted/null values remain unknown.
+                $this->require(is_string($sku['seller_sku'] ?? null)
+                    && (! $forVerification || trim($sku['seller_sku']) !== ''), $message);
+            }
+            // Deleted/inactive products still reserve duplicate identities, but cannot verify a creation.
+            $this->require(! $forVerification || in_array($normal['status'] ?? null, ['ACTIVATE', 'ACTIVE', 4], true), $message);
+            return $normal;
+        }
         $p = $data['product'] ?? $data;
         $this->require(is_array($p), $message);
         $ids = $this->targetSkuIds($p, $id, $ctx['shop_id'], $message);
@@ -254,7 +278,8 @@ class StockHubTiktokProductGateway
 
     public function verify(array $source, array $context, string $id): array
     {
-        $p = $this->target($id, true);
+        $p = $this->targetSnapshot($id, true, true);
+        $this->require(($p['status'] ?? null) !== 'DELETED', 'Produk TikTok hasil sudah dihapus dan belum terverifikasi.');
         $this->require(count($p['skus']) === count($source['variants']), 'Cakupan SKU hasil belum terverifikasi.');
         $result = [];
         foreach ($source['variants'] as $v) {
