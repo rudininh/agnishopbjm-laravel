@@ -19,7 +19,7 @@ class StockHubGitaProductCache
                 $this->save('shopee_product', ['item_id' => $id], ['shop_id' => $shop, 'name' => $parent['item_name'], 'item_sku' => $parent['item_sku'], 'description' => $parent['description'] ?? '', 'status' => $status, 'is_active' => $status === 'NORMAL', 'weight' => $context['weight'], 'category_id' => $context['category_id'], 'price_min' => min($prices), 'price_max' => max($prices), 'price_before_discount' => min($prices), 'currency' => 'IDR', 'stock' => array_sum(array_column($source['variants'], 'stock')), 'has_model' => $source['has_model']]);
                 foreach ($result as $i => $r) {
                     $v = $source['variants'][$i];
-                    if (Schema::hasTable('shopee_product_model')) {
+                    if ($source['has_model'] && Schema::hasTable('shopee_product_model')) {
                         $conflict = DB::table('shopee_product_model')->where('model_id', $r['id'])->where('item_id', '!=', $id)->exists();
                         StockHubGitaProductSource::need(!$conflict, 'Cache model dimiliki produk lain.');
                         $names = [];

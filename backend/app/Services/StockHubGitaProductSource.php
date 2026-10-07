@@ -210,10 +210,7 @@ class StockHubGitaProductSource
 
     public static function publicUrl(mixed $url): string
     {
-        self::need(is_string($url) && filter_var($url, FILTER_VALIDATE_URL) !== false && parse_url($url, PHP_URL_SCHEME) === 'https', 'Gambar harus memiliki URL HTTPS publik.');
-        $host = strtolower(parse_url($url, PHP_URL_HOST) ?? '');
-        self::need($host !== '' && $host !== 'localhost' && !str_ends_with($host, '.local') && !str_ends_with($host, '.localhost') && !isset(parse_url($url)['user']) && !isset(parse_url($url)['pass']) && (!filter_var($host, FILTER_VALIDATE_IP) || filter_var($host, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE)), 'Gambar harus memiliki URL HTTPS publik.');
-        return $url;
+        return app(StockHubGitaImageAddress::class)->validate($url)['url'];
     }
 
     public static function need(bool $ok, string $message): void { if (!$ok) { throw new \DomainException($message); } }

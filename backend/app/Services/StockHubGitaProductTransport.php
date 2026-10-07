@@ -12,7 +12,7 @@ class StockHubGitaProductTransport
     public const SOURCE = 'shopee-agnishopbjm';
     public const TARGET = 'shopee-gitacollectionbjm';
 
-    public function __construct(private MarketplaceStockMirrorTransport $accounts) {}
+    public function __construct(private MarketplaceStockMirrorTransport $accounts, private StockHubGitaImageAddress $imageAddress) {}
 
     public function identities(?array $expected = null): array
     {
@@ -70,9 +70,7 @@ class StockHubGitaProductTransport
         $this->identities($identities);
         $ctx = $this->accounts->context(self::TARGET);
         try {
-            $download = Http::timeout(6)->withOptions(['allow_redirects' => false])->retry(3, 250, $this->transient(...), throw: false)->get(StockHubGitaProductSource::publicUrl($image['url']));
-            $bytes = $download->body(); $type = strtolower(explode(';', $download->header('Content-Type'))[0]);
-            if (!$download->successful() || !in_array($type, ['image/jpeg', 'image/png'], true) || strlen($bytes) === 0 || strlen($bytes) > 10 * 1024 * 1024) { throw new \DomainException(); }
+            $asset = $this->download($image['url']); $bytes = $asset['bytes']; $type = $asset['mime'];
             $cfg = $ctx['config']; $path = '/api/v2/media_space/upload_image'; $timestamp = time();
             $q = ['partner_id' => $cfg['partner_id'], 'timestamp' => $timestamp, 'sign' => hash_hmac('sha256', $cfg['partner_id'].$path.$timestamp, $cfg['partner_key'])];
             $r = Http::timeout(12)->retry(3, 250, $this->transient(...), throw: false)->attach('image', $bytes, $type === 'image/png' ? 'product.png' : 'product.jpg')->post(rtrim($cfg['host'], '/').$path.'?'.http_build_query($q), ['scene' => $image['scene']]);
@@ -87,6 +85,24 @@ class StockHubGitaProductTransport
             if (!is_string($id) || $id === '') { throw new \DomainException(); }
             return $id;
         } catch (\Throwable) { throw new \DomainException('Transfer gambar Shopee gagal. Periksa gambar dan koneksi lalu coba kembali.'); }
+    }
+
+    /** Read-only asset transfer shared by upload preparation and safe diagnostics. */
+    public function download(string $url): array
+    {
+        try {
+            $address = $this->imageAddress->validate($url);
+            // An IP URI prevents alternate DNS resolution. Host and verified TLS peer/SNI
+            // retain the original hostname; StreamHandler needs no ext-curl dependency.
+            $download = Http::timeout(6)->setHandler(new \GuzzleHttp\Handler\StreamHandler)
+                ->withHeaders(['Host' => $address['authority']])->withOptions([
+                    'allow_redirects' => false, 'proxy' => '',
+                    'stream_context' => ['ssl' => ['peer_name' => $address['host'], 'SNI_enabled' => true, 'verify_peer' => true, 'verify_peer_name' => true, 'allow_self_signed' => false]],
+                ])->retry(3, 250, $this->transient(...), throw: false)->get($address['connect_url']);
+            $bytes = $download->body(); $type = strtolower(explode(';', $download->header('Content-Type'))[0]);
+            if (!$download->successful() || !in_array($type, ['image/jpeg', 'image/png'], true) || strlen($bytes) === 0 || strlen($bytes) > 10 * 1024 * 1024) { throw new \DomainException(); }
+            return ['bytes' => $bytes, 'mime' => $type];
+        } catch (\Throwable) { throw new \DomainException('Download gambar Shopee gagal. Periksa alamat publik, gambar, dan koneksi.'); }
     }
 
     private function transient(\Exception $e): bool

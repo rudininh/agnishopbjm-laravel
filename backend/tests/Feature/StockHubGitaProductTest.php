@@ -24,10 +24,13 @@ class StockHubGitaProductTest extends TestCase
     private array $boundaryErrors = [];
     private array $transferFailures = [];
     private int $transferAttempts = 0;
+    private array $downloadOptions = [];
+    private array $downloadRequests = [];
 
     protected function setUp(): void
     {
         parent::setUp();
+        $this->bindImageResolver(['93.184.216.34']);
         Http::preventStrayRequests();
         DB::table('shopee_config')->delete();
         config(['shopee_mass_upload.stb_control_url' => '']);
@@ -38,11 +41,13 @@ class StockHubGitaProductTest extends TestCase
         Schema::create('stock_master', fn (Blueprint $t) => [$t->id(), $t->integer('stock')]);
         DB::table('stock_master')->insert(['stock' => 19]);
         DB::table('marketplace_listings')->insert(['stock_master_id' => 1, 'account_key' => 'shopee-agnishopbjm', 'channel' => 'shopee', 'remote_product_id' => '10', 'remote_variant_id' => '101', 'remote_identity_hash' => hash('sha256', 'source'), 'seller_sku' => 'INT-10-GREEN']);
-        Http::fake(function ($r) {
+        Http::fake(function ($r, array $options) {
             try {
             $path = parse_url($r->url(), PHP_URL_PATH);
             parse_str(parse_url($r->url(), PHP_URL_QUERY) ?? '', $q);
-            if (str_contains($r->url(), 'img.test')) {
+            if (str_contains($r->url(), 'img.test') || ($r->method() === 'GET' && in_array('img.test', $r->header('Host'), true))) {
+                $this->downloadOptions[] = $options;
+                $this->downloadRequests[] = $r;
                 if ($this->transferFailures !== []) {
                     $this->transferAttempts++; $failure = array_shift($this->transferFailures);
                     if ($failure === 'connection') { return Http::failedConnection('secret'); }
@@ -528,6 +533,103 @@ class StockHubGitaProductTest extends TestCase
             $this->postJson($this->base.'/runs', ['source_product_id' => '10', 'request_key' => (string) Str::uuid(), $key => $value])->assertStatus(422);
             $this->postJson($this->base.'/runs', ['source_product_id' => '10', 'request_key' => (string) Str::uuid(), 'context' => [$key => $value]])->assertStatus(422);
         }
+        Http::assertNothingSent();
+    }
+
+    public function test_variantless_sentinel_never_creates_or_conflicts_with_a_real_model_cache_row(): void
+    {
+        $this->legacyCache();
+        DB::table('shopee_product_model')->insert(['model_id' => '0', 'item_id' => 10, 'model_sku' => 'Existing sentinel', 'stock' => 99]);
+        DB::table('marketplace_listings')->where('account_key', 'shopee-agnishopbjm')->update(['remote_variant_id' => '0', 'seller_sku' => 'INT-10']);
+        $this->mode = 'variantless'; $r = $this->finish($this->start());
+        $this->assertSame('success', $r['status'], json_encode($r));
+        $this->assertSame('0', $r['result']['skus'][0]['id']);
+        $this->assertSame(0, DB::table('shopee_product_model')->where('item_id', 200)->count());
+        $this->assertSame(99, DB::table('shopee_product_model')->where('model_id', '0')->value('stock'));
+        $this->assertSame('0', DB::table('marketplace_listings')->where('account_key', 'shopee-gitacollectionbjm')->value('remote_variant_id'));
+        $this->assertSame(19, DB::table('stock_master')->value('stock'));
+    }
+
+    public function test_bracketed_private_ipv6_urls_never_reach_image_downloads(): void
+    {
+        $this->assertImageDownloadRefused('https://[::1]/private.jpg');
+        $this->assertImageDownloadRefused('https://[fc00::1]/private.jpg');
+        $this->assertImageDownloadRefused('https://[fe80::1]/private.jpg');
+        $this->assertImageDownloadRefused('https://[::ffff:127.0.0.1]/private.jpg');
+    }
+
+    public function test_private_dns_addresses_never_reach_image_downloads(): void
+    {
+        foreach (['127.0.0.1','10.0.0.1','100.127.0.1','169.254.0.1','192.0.2.1','198.18.0.1','203.0.113.1','224.0.0.1','::1','2001:db8::1','2002:7f00:1::1'] as $private) {
+            $this->bindImageResolver(['93.184.216.34', $private]);
+            $this->assertImageDownloadRefused('https://private.example/private.jpg');
+        }
+    }
+
+    public function test_public_image_downloads_pin_checked_addresses_and_disable_proxy_and_redirects(): void
+    {
+        $this->bindImageResolver(['93.184.216.34']);
+        $r = $this->finish($this->start()); $this->assertSame('success', $r['status']);
+        $this->assertCount(4, $this->downloadOptions);
+        foreach ($this->downloadOptions as $options) {
+            $this->assertSame('img.test', $options['stream_context']['ssl']['peer_name'] ?? null);
+            $this->assertTrue($options['stream_context']['ssl']['verify_peer'] ?? false);
+            $this->assertTrue($options['stream_context']['ssl']['verify_peer_name'] ?? false);
+            $this->assertSame('', $options['proxy'] ?? null); $this->assertFalse($options['allow_redirects']);
+        }
+        foreach ($this->downloadRequests as $request) { $this->assertSame('93.184.216.34', parse_url($request->url(), PHP_URL_HOST)); $this->assertSame(['img.test'], $request->header('Host')); }
+    }
+
+    public function test_pinned_download_retains_original_port_path_query_host_and_tls_peer(): void
+    {
+        Http::swap(new \Illuminate\Http\Client\Factory); Http::preventStrayRequests();
+        Http::fake(function ($request, array $options) {
+            $this->assertSame('https://93.184.216.34/full/image.png?quality=original', $request->url());
+            $this->assertSame(443, parse_url($request->url(), PHP_URL_PORT) ?? 443);
+            $this->assertSame(['media.example:443'], $request->header('Host'));
+            $this->assertSame('media.example', $options['stream_context']['ssl']['peer_name']);
+            $this->assertTrue($options['stream_context']['ssl']['SNI_enabled']);
+            return Http::response('png-bytes', 200, ['Content-Type' => 'image/png']);
+        });
+        $asset = $this->app->make(\App\Services\StockHubGitaProductTransport::class)->download('https://media.example:443/full/image.png?quality=original');
+        $this->assertSame(['bytes' => 'png-bytes', 'mime' => 'image/png'], $asset);
+    }
+
+    public function test_download_retries_retain_pinned_address_without_another_dns_resolution(): void
+    {
+        $resolver = new class extends \App\Services\StockHubGitaImageAddressResolver {
+            private int $calls = 0;
+            public function resolve(string $host): array { return ++$this->calls === 1 ? ['93.184.216.34'] : ['127.0.0.1']; }
+        };
+        $this->app->instance(\App\Services\StockHubGitaImageAddressResolver::class, $resolver);
+        Http::swap(new \Illuminate\Http\Client\Factory); Http::preventStrayRequests(); $attempts = 0;
+        Http::fake(function ($request) use (&$attempts) {
+            $this->assertSame('93.184.216.34', parse_url($request->url(), PHP_URL_HOST));
+            $this->assertSame(['media.example'], $request->header('Host'));
+            return ++$attempts < 3 ? Http::response('transient', 503) : Http::response('image-bytes', 200, ['Content-Type' => 'image/jpeg']);
+        });
+        $asset = $this->app->make(\App\Services\StockHubGitaProductTransport::class)->download('https://media.example/image.jpg');
+        $this->assertSame('image-bytes', $asset['bytes']); Http::assertSentCount(3);
+    }
+
+    private function bindImageResolver(array $addresses): void
+    {
+        $resolver = new class($addresses) extends \App\Services\StockHubGitaImageAddressResolver {
+            public function __construct(private array $addresses) {}
+            public function resolve(string $host): array { return $this->addresses; }
+        };
+        $this->app->instance(\App\Services\StockHubGitaImageAddressResolver::class, $resolver);
+    }
+
+    private function assertImageDownloadRefused(string $url): void
+    {
+        Http::swap(new \Illuminate\Http\Client\Factory);
+        Http::preventStrayRequests();
+        Http::fake(fn ($r) => $r->method() === 'GET' ? Http::response('image-bytes', 200, ['Content-Type' => 'image/jpeg']) : Http::response(['error' => '', 'response' => ['image_info' => ['image_id' => 'unsafe-image']]]));
+        $transport = $this->app->make(\App\Services\StockHubGitaProductTransport::class);
+        $refused = false;
+        try { $transport->upload(['url' => $url, 'scene' => 'desc'], $transport->identities()); } catch (\DomainException) { $refused = true; }
+        $this->assertTrue($refused, 'Private image address must be refused.');
         Http::assertNothingSent();
     }
 }
