@@ -69,7 +69,10 @@ class StockHubGitaProductService
                 if ($this->revision->current() !== $state['scan_revision'] || $this->attempts() !== $state['scan_attempts']) { throw new \DomainException('Katalog berubah selama pemindaian. Ulangi pemeriksaan produk.'); }
                 $submit = $this->mutation($row, $state, $owner, 'add_item', 'attempted_at');
                 try { $accepted = $submit($state['payload']); }
-                catch (StockHubGitaProductRejected $e) { $this->save($id, 'rejected', $state, $e->getMessage()); return $this->show($id); }
+                catch (StockHubGitaProductRejected $e) {
+                    $state['rejection'] = ['code' => $e->marketplaceCode, 'field' => $e->field];
+                    $this->save($id, 'rejected', $state, $e->getMessage()); return $this->show($id);
+                }
                 $remote = $this->gateway->acceptedParent($accepted, $state['identities'], $state['source']);
                 $state['init_after'] = now()->addSeconds(5)->format('Y-m-d H:i:s.u');
                 $state['result'] = ['product_id' => $remote, 'skus' => [], 'published' => false];

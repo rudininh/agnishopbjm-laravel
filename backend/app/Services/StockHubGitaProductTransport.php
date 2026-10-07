@@ -53,7 +53,7 @@ class StockHubGitaProductTransport
         } catch (\Throwable) { throw new \DomainException('Respons Shopee belum dapat dipastikan. Periksa koneksi dan status produk.'); }
         if ($method === 'GET' && $path === '/api/v2/shop/get_warehouse_detail' && $r->successful() && ($j['error'] ?? null) === 'warehouse.error_not_in_whitelist') { return ['ordinary_no_location' => true]; }
         if ($method === 'POST' && $path === '/api/v2/product/add_item' && $r->status() < 500 && is_array($j) && is_string($j['error'] ?? null) && $j['error'] !== '' && !array_key_exists('item_id', $j['response'] ?? []) && !array_key_exists('item_id', $j)) {
-            throw new StockHubGitaProductRejected('Shopee menolak produk sebelum menerima induk. Periksa kategori, atribut, gambar, dan pengiriman lalu coba kembali.');
+            throw StockHubGitaProductRejected::fromResponse($j);
         }
         $envelope = $path === '/api/v2/product/get_variation_tree' ? 'data' : 'response';
         if (!$r->successful() || !is_array($j) || ($j['error'] ?? null) !== '' || !is_array($j[$envelope] ?? null)) { throw new \DomainException('Respons Shopee tidak lengkap atau ditolak. Periksa metadata dan akun.'); }

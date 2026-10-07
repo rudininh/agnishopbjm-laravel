@@ -30,6 +30,7 @@ class StockHubGitaProductTest extends TestCase
     private array $sourceModelExtras = [];
     private array $targetModelExtras = [];
     private array $catalogPages = [];
+    private ?array $parentRejection = null;
 
     protected function setUp(): void
     {
@@ -115,6 +116,7 @@ class StockHubGitaProductTest extends TestCase
                 $this->assertTrue(DB::table('stock_hub_gita_product_runs')->whereNotNull($column)->exists());
                 $this->writes[] = [$path, $r->data()];
                 if ($path === '/api/v2/product/add_item') {
+                    if ($this->parentRejection !== null) { return Http::response($this->parentRejection, 400); }
                     if ($this->mode === 'unknown') { return Http::failedConnection('secret'); }
                     if ($this->mode === 'reject') { return Http::response(['error' => 'product.invalid', 'message' => 'secret'], 400); }
                     if ($this->mode === 'server') { return Http::response(['error' => 'product.invalid'], 500); }
@@ -431,6 +433,56 @@ class StockHubGitaProductTest extends TestCase
             $r = $this->postJson($this->base.'/runs/'.$r['run_id'].'/step')->assertOk()->json('data');
             $this->assertCount(1, $this->writes); $this->assertStringNotContainsString('secret', json_encode($r));
         }
+    }
+
+    public static function identifiedParentRejections(): array
+    {
+        return [
+            'package dimension' => ['package_height must be greater than zero', 'dimension', 'Dimensi paket'],
+            'chart address' => ['size_chart_image_url is invalid', 'size_chart_image_url', 'Tabel ukuran'],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('identifiedParentRejections')]
+    public function test_parent_rejection_retains_safe_code_and_identifies_the_invalid_field(string $reason, string $field, string $guidance): void
+    {
+        $this->parentRejection = ['error' => 'product.error_param', 'message' => $reason.'; access_token=secret', 'request_id' => 'private-request'];
+        $r = $this->finish($this->start());
+        $this->assertSame('rejected', $r['status']);
+        $this->assertTrue($r['can_retry']);
+        $this->assertNull($r['remote_product_id']);
+        $this->assertStringContainsString('product.error_param', $r['message']);
+        $this->assertStringContainsString($guidance, $r['message']);
+        $saved = json_decode(DB::table('stock_hub_gita_product_runs')->where('id', $r['run_id'])->value('state'), true);
+        $this->assertSame(['code' => 'product.error_param', 'field' => $field], $saved['rejection']);
+        $this->assertStringNotContainsString('secret', json_encode($saved));
+        $this->assertStringNotContainsString('private-request', json_encode($saved));
+        $this->assertStringNotContainsString($reason, json_encode($saved));
+        $this->assertSame($r, $this->getJson($this->base.'/runs/'.$r['run_id'])->assertOk()->json('data'));
+        $this->postJson($this->base.'/runs/'.$r['run_id'].'/step')->assertOk();
+        $this->assertCount(1, $this->writes);
+    }
+
+    public static function untrustedParentRejections(): array
+    {
+        return [
+            'unknown code and secret message' => [['error' => 'access_token=secret', 'message' => 'secret'], null],
+            'structured message' => [['error' => 'product.error_param', 'message' => ['access_token' => 'secret']], 'product.error_param'],
+            'ambiguous fields' => [['error' => 'product.error_param', 'message' => 'image and category_id invalid; secret'], 'product.error_param'],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('untrustedParentRejections')]
+    public function test_parent_rejection_never_exposes_untrusted_marketplace_text(array $response, ?string $code): void
+    {
+        $this->parentRejection = $response;
+        $r = $this->finish($this->start());
+        $this->assertSame('rejected', $r['status']);
+        $saved = json_decode(DB::table('stock_hub_gita_product_runs')->where('id', $r['run_id'])->value('state'), true);
+        $this->assertSame(['code' => $code, 'field' => null], $saved['rejection'] ?? null);
+        $this->assertStringNotContainsString('secret', json_encode($saved));
+        $this->assertStringNotContainsString('access_token', $r['message']);
+        $this->assertCount(1, $this->writes);
     }
 
     public function test_init_unknown_is_read_back_and_partial_never_replayed(): void

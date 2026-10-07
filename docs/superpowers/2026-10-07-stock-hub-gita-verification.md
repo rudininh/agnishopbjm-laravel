@@ -118,3 +118,37 @@ variation initialization, publication or inventory writes.
 Independent scoped review found no actionable issues. Full backend verification
 passed: **746 tests / 11,497 assertions**, exit 0 (03:15.142). PHP syntax checks
 and `git diff --check` passed. Frontend source and published assets are unchanged.
+
+## Follow-up: retain safe parent-rejection diagnostics
+
+The earlier explicit `add_item` rejection discarded the marketplace error code
+and message, leaving only generic guidance in durable state. Its specific
+product rejection cause cannot be recovered from that state. Future explicit
+rejections retain only a bounded code and a recognized field with fixed
+Indonesian guidance. The raw message, request ID and response are never stored
+or exposed. Ambiguous or malformed diagnostic text keeps generic guidance.
+
+The transport's proven-rejection boundary and all uncertain/known-parent
+recovery rules are unchanged. The diagnostic does not replay creation, infer
+acceptance, modify stock or claim that the earlier product rejection is fixed.
+The existing UI renders the safe message and DB-only recovery preserves it.
+
+The HTTP-boundary regression first failed on missing diagnostics
+(**4 tests / 286 assertions**, four expected failures), then passed together
+with the existing uncertain-parent suite (**5 tests / 748 assertions**).
+Independent review found one omitted size-chart-address alias; its new
+regression reproduced that omission and passed after adding the exact alias.
+The resulting focused suite passed **6 tests / 830 assertions**. The backend
+suite before that last alias passed **750 tests / 11,801 assertions**, exit 0.
+
+A later operator retry was blocked by an expired destination access token.
+An account-scoped refresh succeeded; both account contexts then passed and
+GET-only source/metadata/placeholder-payload preflight passed. This performed
+no product creation, image upload, variation initialization or inventory write.
+
+Final verification after the chart-address alias passed **751 tests / 11,883
+assertions**, exit 0 (03:08.299). The independent reviewer confirmed the alias
+finding closed and reran the focused suite (**6 tests / 830 assertions**).
+PHP syntax checks and `git diff --check` passed. The original rejected source
+still has no new operator creation attempt; its specific earlier rejection
+cause remains unknown. Frontend production assets are unchanged.
