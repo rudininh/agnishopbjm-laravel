@@ -44,7 +44,8 @@ class StockHubGitaProductMetadata
         $chart = $input['size_chart_image_url'] ?? $source['chart'];
         if ($chart !== '') {
             $this->need(($limits['size_chart_limit']['support_image_size_chart'] ?? false) === true, 'Kategori Gita belum mendukung gambar tabel ukuran.');
-            $context['size_chart_image_url'] = StockHubGitaProductSource::publicUrl($chart);
+            try { $context['size_chart_image_url'] = StockHubGitaProductSource::publicUrl($chart); }
+            catch (\DomainException) { $fields[] = $this->field('size_chart_image_url'); }
         } elseif (($limits['size_chart_limit']['size_chart_mandatory'] ?? false) === true || ($source['chart_required'] ?? false)) { $fields[] = $this->field('size_chart_image_url'); }
         $this->range(mb_strlen($p['item_name']), $limits, 'item_name_length_limit', 'Panjang judul tidak diterima Gita.');
         $this->range(count($source['gallery']), $limits, 'item_image_count_limit', 'Jumlah galeri tidak diterima Gita.');
@@ -90,7 +91,7 @@ class StockHubGitaProductMetadata
         }
         $selected = $input['logistic_ids'] ?? array_values(array_intersect(array_map(fn ($l) => (string) $l['logistic_id'], $p['logistic_info']), array_column($options, 'id')));
         $selected = array_values(array_unique($selected)); sort($selected, SORT_STRING); $context['logistic_ids'] = $selected;
-        $logistics = []; $bad = $selected === [] || $fields !== [];
+        $logistics = []; $bad = $selected === [];
         foreach ($selected as $cid) {
             $ch = $available[$cid] ?? null;
             $src = array_values(array_filter($p['logistic_info'], fn ($l) => (string) $l['logistic_id'] === $cid))[0] ?? ['logistic_id' => (int) $cid, 'enabled' => true, 'is_free' => false];

@@ -26,6 +26,7 @@ class StockHubGitaProductTest extends TestCase
     private int $transferAttempts = 0;
     private array $downloadOptions = [];
     private array $downloadRequests = [];
+    private array $sourceExtras = [];
 
     protected function setUp(): void
     {
@@ -146,7 +147,7 @@ class StockHubGitaProductTest extends TestCase
             if ($this->uploads) { $p['attribute_list'] = array_reverse($p['attribute_list']); $p['logistic_info'] = array_reverse($p['logistic_info']); $p['dimension'] = array_reverse($p['dimension'], true); $p['pre_order'] = array_reverse($p['pre_order'], true); }
         }
         if ($this->mode === 'extended') { $p['description_type'] = 'extended'; $p['description_info'] = ['extended_description' => ['field_list' => [['field_type' => 'text', 'text' => 'Complete original product description'], ['field_type' => 'image', 'image_info' => ['image_url' => 'https://img.test/description.jpg']]]]]; }
-        return $p;
+        return [...$p, ...$this->sourceExtras];
     }
 
     private function sourceModels(): array
@@ -429,10 +430,19 @@ class StockHubGitaProductTest extends TestCase
         $this->assertSame('blocked', $r['status']); $this->assertSame([], $this->writes);
     }
 
+    public function test_missing_required_chart_returns_only_chart_correction(): void
+    {
+        $this->mode = 'chart'; $r = $this->finish($this->start());
+        $this->assertSame('blocked', $r['status']);
+        $this->assertSame(['size_chart_image_url'], array_column($r['required_fields'], 'key'));
+        $this->assertSame(['8003'], $r['context']['logistic_ids']);
+        $this->assertSame([], $this->writes); $this->assertSame([], $this->downloadRequests);
+    }
+
     public function test_unresolvable_chart_returns_only_chart_correction_and_accepts_explicit_image(): void
     {
         $this->mode = 'chart_bad'; $r = $this->finish($this->start());
-        $this->assertSame('blocked', $r['status']); $this->assertSame('size_chart_image_url', $r['required_fields'][0]['key'] ?? null);
+        $this->assertSame('blocked', $r['status']); $this->assertSame(['size_chart_image_url'], array_column($r['required_fields'], 'key'));
         $r = $this->finish($this->start(['size_chart_image_url' => 'https://img.test/fixed-chart.jpg']));
         $this->assertSame('success', $r['status']);
     }
@@ -440,10 +450,94 @@ class StockHubGitaProductTest extends TestCase
     public function test_private_source_chart_is_a_correction_and_never_downloaded(): void
     {
         $this->mode = 'chart_private'; $r = $this->finish($this->start());
-        $this->assertSame('size_chart_image_url', $r['required_fields'][0]['key'] ?? null);
+        $this->assertSame(['size_chart_image_url'], array_column($r['required_fields'], 'key'));
         $r = $this->finish($this->start(['size_chart_image_url' => 'https://img.test/fixed-chart.jpg']));
         $this->assertSame('success', $r['status']);
         Http::assertNotSent(fn ($request) => str_contains($request->url(), 'localhost'));
+    }
+
+    public static function excludedOptionalContent(): array
+    {
+        $fields = ['video_info' => [['video_id' => 'source-video']], 'promotion_images' => ['image_id_list' => ['source-promotion']], 'wholesales' => [['min_count' => 10, 'max_count' => 20, 'unit_price' => 125000]]];
+        return ['video' => [array_intersect_key($fields, ['video_info' => true])], 'promotion' => [array_intersect_key($fields, ['promotion_images' => true])], 'wholesale' => [array_intersect_key($fields, ['wholesales' => true])], 'combined' => [$fields]];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('excludedOptionalContent')]
+    public function test_optional_excluded_source_content_does_not_block_or_transfer(array $extras): void
+    {
+        $this->sourceExtras = $extras; $this->legacyCache();
+        $source = $this->sourceParent(); $models = $this->sourceModels();
+        $cachedParent = DB::table('shopee_product')->where('item_id', 10)->first();
+        $cachedModel = DB::table('shopee_product_model')->where('model_id', '101')->first();
+        $sourceListing = DB::table('marketplace_listings')->where('account_key', 'shopee-agnishopbjm')->first();
+        $r = $this->finish($this->start());
+        $this->assertSame('success', $r['status'], json_encode($r));
+        $this->assertSame([], $r['required_fields']); $this->assertCount(3, $this->writes);
+        $create = $this->writes[0][1]; $init = $this->writes[1][1];
+        $this->assertSame('Full product title', $create['item_name']);
+        $this->assertSame('Complete original product description', $create['description']);
+        $this->assertSame(['uploaded-1'], $create['image']['image_id_list']);
+        $this->assertArrayHasKey('size_chart_info', $create);
+        $this->assertSame(['INT-10-GREEN', 'INT-10-BLUE'], array_column($init['model'], 'model_sku'));
+        $this->assertSame([150000, 175000], array_column($init['model'], 'original_price'));
+        $this->assertSame([0, 7], array_map(fn ($m) => $m['seller_stock'][0]['stock'], $init['model']));
+        foreach (['video_info', 'promotion_images', 'wholesales'] as $field) {
+            $this->assertStringNotContainsString('"'.$field.'":', json_encode($this->writes));
+            $this->assertStringNotContainsString('"'.$field.'":', DB::table('stock_hub_gita_product_runs')->where('id', $r['run_id'])->value('state'));
+        }
+        $this->assertEquals($cachedParent, DB::table('shopee_product')->where('item_id', 10)->first());
+        $this->assertEquals($cachedModel, DB::table('shopee_product_model')->where('model_id', '101')->first());
+        $this->assertEquals($sourceListing, DB::table('marketplace_listings')->where('account_key', 'shopee-agnishopbjm')->first());
+        $this->assertSame(19, DB::table('stock_master')->value('stock'));
+        $transport = $this->app->make(\App\Services\StockHubGitaProductTransport::class);
+        $this->assertSame(['item_list' => [$source]], $transport->read($transport::SOURCE, '/api/v2/product/get_item_base_info', ['item_id_list' => '10']));
+        $this->assertSame($models, $transport->read($transport::SOURCE, '/api/v2/product/get_model_list', ['item_id' => '10']));
+        Http::assertNotSent(fn ($request) => $request->method() !== 'GET' && str_contains($request->url(), 'shop_id=11'));
+    }
+
+    public static function unsupportedRegionalContent(): array
+    {
+        return ['complaint' => ['complaint_policy'], 'tax' => ['tax_info'], 'certification' => ['certification_info']];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('unsupportedRegionalContent')]
+    public function test_unsupported_regional_source_metadata_remains_blocked(string $field): void
+    {
+        $this->sourceExtras = [$field => ['required' => true]];
+        $r = $this->finish($this->start());
+        $this->assertSame('blocked', $r['status']); $this->assertTrue($r['can_retry']);
+        $this->assertSame([], $this->writes); $this->assertSame([], $this->downloadRequests);
+        $this->assertSame(0, $this->uploads);
+    }
+
+    public static function unsafeOperatorCharts(): array
+    {
+        return ['localhost' => ['https://localhost/chart.jpg'], 'private_ip' => ['https://127.0.0.1/chart.jpg'], 'unresolved_host' => ['https://unresolved.example/chart.jpg']];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('unsafeOperatorCharts')]
+    public function test_rejected_operator_chart_remains_editable_with_complete_context_for_retry(string $url): void
+    {
+        $resolver = new class extends \App\Services\StockHubGitaImageAddressResolver {
+            public function resolve(string $host): array { return $host === 'unresolved.example' ? [] : ['93.184.216.34']; }
+        };
+        $this->app->instance(\App\Services\StockHubGitaImageAddressResolver::class, $resolver);
+        $this->mode = 'warehouse';
+        $context = ['category_id' => '100493', 'weight' => 0.7, 'dimension' => ['package_length' => 12, 'package_width' => 21, 'package_height' => 4], 'logistic_ids' => ['8003'], 'location_id' => 'target-b', 'size_chart_image_url' => $url];
+        $r = $this->finish($this->start($context));
+        $this->assertSame('blocked', $r['status']); $this->assertTrue($r['can_retry']);
+        $this->assertSame([['key' => 'size_chart_image_url', 'label' => 'Gambar tabel ukuran', 'type' => 'url']], $r['required_fields']);
+        $this->assertSame($context, $r['context']);
+        $this->assertSame([], $this->writes); $this->assertSame([], $this->downloadRequests); $this->assertSame(0, $this->uploads);
+        $this->assertSame($r, $this->getJson($this->base.'/source/10')->assertOk()->json('data'));
+        $context = [...$r['context'], 'size_chart_image_url' => 'https://img.test/fixed-chart.jpg'];
+        $retry = $this->finish($this->start($context));
+        $this->assertNotSame($r['run_id'], $retry['run_id']);
+        $this->assertSame('success', $retry['status'], json_encode($retry)); $this->assertSame($context, $retry['context']);
+        $this->assertSame('target-b', $this->writes[0][1]['seller_stock'][0]['location_id']);
+        $this->assertSame(0.7, $this->writes[0][1]['weight']); $this->assertSame($context['dimension'], $this->writes[0][1]['dimension']);
+        $this->assertArrayHasKey('size_chart_info', $this->writes[0][1]);
+        Http::assertNotSent(fn ($request) => str_contains($request->url(), parse_url($url, PHP_URL_HOST)) || in_array(parse_url($url, PHP_URL_HOST), $request->header('Host'), true));
     }
 
     public function test_image_transient_transfer_retries_are_bounded_and_permanent_failures_stop(): void
@@ -479,7 +573,7 @@ class StockHubGitaProductTest extends TestCase
     public function test_template_chart_is_never_silently_discarded_even_if_optional(): void
     {
         $this->mode = 'template'; $r = $this->finish($this->start());
-        $this->assertSame('blocked', $r['status']); $this->assertSame('size_chart_image_url', $r['required_fields'][0]['key'] ?? null);
+        $this->assertSame('blocked', $r['status']); $this->assertSame(['size_chart_image_url'], array_column($r['required_fields'], 'key'));
         $this->assertSame([], $this->writes);
     }
 

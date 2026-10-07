@@ -77,8 +77,8 @@ test('both creation actions coexist and Gita busy locks conflicting actions and 
   } finally { view.app.unmount() }
 })
 
-test('Gita form renders grouped cm, kg, HTTPS chart, leaf categories and verified logistics/location', async () => {
-  const saved = { category_id: '2', weight: 0.5, dimension: { package_length: 10, package_width: 20, package_height: 3 }, logistic_ids: ['1'], location_id: 'old', size_chart_image_url: 'https://cdn.example/a.jpg' }
+test('Gita form corrects a rejected HTTPS chart and retains grouped shipping and category context', async () => {
+  const saved = { category_id: '2', weight: 0.5, dimension: { package_length: 10, package_width: 20, package_height: 3 }, logistic_ids: ['1'], location_id: 'old', size_chart_image_url: 'https://localhost/chart.jpg' }
   const required_fields = [{ key: 'category_id', label: 'Kategori', type: 'category' }, { key: 'weight', label: 'Berat', type: 'number', unit: 'kg' },
     { key: 'dimension', label: 'Dimensi', type: 'number', unit: 'cm' }, { key: 'logistic_ids', label: 'Logistik', type: 'multiselect', options: [{ id: '1', name: 'Courier A' }, { id: '2', name: 'Courier B' }] },
     { key: 'location_id', label: 'Lokasi', type: 'select', options: [{ id: 'old', name: 'Old' }, { id: 'new', name: 'New' }] }, { key: 'size_chart_image_url', label: 'Chart', type: 'url' }]
@@ -93,14 +93,15 @@ test('Gita form renders grouped cm, kg, HTTPS chart, leaf categories and verifie
     const fields = view.all().filter(el => { for (let p = el.parent; p; p = p.parent) if (p === dialog) return true; return false })
     const numbers = fields.filter(el => el.type === 'input' && el.props.type === 'number')
     assert.equal(numbers.length, 4); assert.equal(numbers.filter(el => el.props.step === '1').length, 3)
-    assert.ok(view.all().some(el => el.type === 'input' && el.props.type === 'url'))
+    const chart = fields.find(el => el.type === 'input' && el.props.type === 'url')
+    assert.ok(chart)
     assert.ok(view.text(view.root).includes('Fashion / Tas'))
     const selects = fields.filter(el => el.type === 'select')
     assert.equal(selects.length, 3); assert.equal(selects.filter(el => el.props.multiple).length, 1)
-    numbers[1].props['onUpdate:modelValue']('12'); selects[1].props['onUpdate:modelValue'](['2']); selects[2].props['onUpdate:modelValue']('new')
+    numbers[1].props['onUpdate:modelValue']('12'); selects[1].props['onUpdate:modelValue'](['2']); selects[2].props['onUpdate:modelValue']('new'); chart.props['onUpdate:modelValue']('https://cdn.example/corrected-chart.jpg')
     await tick(); view.all().find(el => el.type === 'form').props.onSubmit({ preventDefault() {} }); await tick()
     assert.deepEqual(calls.slice(-2), ['GET', 'POST'])
-    assert.deepEqual(payloads[0].context, { ...saved, dimension: { package_length: 12, package_width: 20, package_height: 3 }, logistic_ids: ['2'], location_id: 'new' })
+    assert.deepEqual(payloads[0].context, { ...saved, dimension: { package_length: 12, package_width: 20, package_height: 3 }, logistic_ids: ['2'], location_id: 'new', size_chart_image_url: 'https://cdn.example/corrected-chart.jpg' })
     assert.equal(view.all().some(el => el.type === 'form'), false)
     assert.ok(view.button('Buat di TikTok')); assert.equal(view.button('Buat di Gitashop'), undefined)
   } finally { view.app.unmount() }

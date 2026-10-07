@@ -34,7 +34,8 @@ class StockHubGitaProductSource
             return ['id' => $id, 'title' => $p['item_name'], 'skus' => $skus];
         }
         self::need(($p['item_status'] ?? null) === 'NORMAL', 'Produk sumber harus aktif di Shopee Agni.');
-        foreach (['video_info', 'wholesales', 'promotion_images', 'complaint_policy', 'tax_info', 'certification_info'] as $field) {
+        // Optional videos, promotion images and wholesale programs are outside the copy projection.
+        foreach (['complaint_policy', 'tax_info', 'certification_info'] as $field) {
             self::need(empty($p[$field]), 'Konten sumber tambahan belum dapat disalin utuh. Periksa Seller Center.');
         }
         foreach (['is_fulfillment_by_shopee','is_pre_sale'] as $field) { self::need(empty($p[$field]), 'Mode pemenuhan sumber belum didukung.'); }
