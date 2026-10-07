@@ -29,6 +29,7 @@ class StockHubGitaProductTest extends TestCase
     private array $sourceExtras = [];
     private array $sourceModelExtras = [];
     private array $targetModelExtras = [];
+    private array $catalogPages = [];
 
     protected function setUp(): void
     {
@@ -107,6 +108,7 @@ class StockHubGitaProductTest extends TestCase
                 $data = ['item' => $candidate ? [['item_id' => 90]] : [], 'has_next_page' => false, 'total_count' => $candidate ? 1 : 0];
                 if ($this->mode === 'pagination') { unset($data['has_next_page']); }
                 if ($this->mode === 'page_loop') { $data = ['item' => [['item_id' => 90]], 'has_next_page' => true, 'next_offset' => 0, 'total_count' => 2]; }
+                $data = $this->catalogPages[$status] ?? $data;
             } elseif (in_array($path, ['/api/v2/product/add_item', '/api/v2/product/init_tier_variation', '/api/v2/product/unlist_item'])) {
                 $this->assertSame('22', $shop);
                 $column = match ($path) { '/api/v2/product/add_item' => 'attempted_at', '/api/v2/product/init_tier_variation' => 'variants_attempted_at', default => 'publication_attempted_at' };
@@ -265,6 +267,63 @@ class StockHubGitaProductTest extends TestCase
         $this->mode = 'variantless'; $r = $this->finish($this->start());
         $this->assertSame('success', $r['status']); $this->assertCount(2, $this->writes);
         $this->assertSame('0', $r['result']['skus'][0]['id']);
+    }
+
+    public function test_empty_statuses_without_item_list_do_not_block_full_catalog_scan(): void
+    {
+        foreach (['NORMAL', 'UNLIST', 'BANNED', 'REVIEWING', 'SHOPEE_DELETE'] as $status) {
+            $this->catalogPages[$status] = ['total_count' => 0, 'has_next_page' => false, 'next' => null];
+        }
+        $this->catalogPages['SELLER_DELETE'] = ['item' => [['item_id' => 90]], 'total_count' => 1, 'has_next_page' => false, 'next' => null];
+        $r = $this->finish($this->start());
+        $this->assertSame('success', $r['status'], json_encode($r));
+        $this->assertTrue($r['result']['published']);
+        $this->assertSame(['NORMAL', 'UNLIST', 'BANNED', 'REVIEWING', 'SELLER_DELETE', 'SHOPEE_DELETE'], $this->scanStatuses);
+        $this->assertSame(1, $r['progress']['scanned_products']);
+        $this->assertCount(3, $this->writes);
+        $this->assertSame(19, DB::table('stock_master')->value('stock'));
+    }
+
+    public function test_empty_statuses_still_check_deleted_catalog_for_duplicate_skus(): void
+    {
+        $this->mode = 'duplicate';
+        foreach (['NORMAL', 'UNLIST', 'BANNED', 'REVIEWING'] as $status) {
+            $this->catalogPages[$status] = ['total_count' => 0, 'has_next_page' => false, 'next' => null];
+        }
+        $this->catalogPages['SELLER_DELETE'] = ['item' => [['item_id' => 90]], 'total_count' => 1, 'has_next_page' => false, 'next' => null];
+        $r = $this->finish($this->start());
+        $this->assertSame('exists', $r['status']);
+        $this->assertSame('90', $r['result']['product_id']);
+        $this->assertSame([], $this->writes);
+        $this->assertSame([], $this->downloadRequests);
+        $this->assertSame(0, DB::table('marketplace_listings')->where('account_key', 'shopee-gitacollectionbjm')->count());
+    }
+
+    public static function incompleteEmptyCatalogPages(): array
+    {
+        return [
+            'positive total without list' => [['total_count' => 1, 'has_next_page' => false]],
+            'unknown total' => [['has_next_page' => false]],
+            'another page' => [['total_count' => 0, 'has_next_page' => true, 'next_offset' => 100]],
+            'unknown pagination' => [['total_count' => 0]],
+            'boolean total' => [['total_count' => false, 'has_next_page' => false]],
+            'null list' => [['item' => null, 'total_count' => 0, 'has_next_page' => false]],
+            'malformed list' => [['item' => false, 'total_count' => 0, 'has_next_page' => false]],
+            'count contradicts list' => [['item' => [], 'total_count' => 1, 'has_next_page' => false]],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('incompleteEmptyCatalogPages')]
+    public function test_incomplete_empty_catalog_evidence_blocks_before_upload_or_creation(array $page): void
+    {
+        $this->catalogPages['NORMAL'] = $page;
+        $r = $this->finish($this->start());
+        $this->assertSame('blocked', $r['status']);
+        $this->assertTrue($r['can_retry']);
+        $this->assertNull($r['remote_product_id']);
+        $this->assertSame([], $this->writes);
+        $this->assertSame([], $this->downloadRequests);
+        $this->assertSame(19, DB::table('stock_master')->value('stock'));
     }
 
     public function test_seller_fulfilled_catalog_bound_models_copy_without_transferring_catalog_ids(): void

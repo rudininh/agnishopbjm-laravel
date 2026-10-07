@@ -92,3 +92,29 @@ assertions**, exit 0 (02:57.316). An earlier full run encountered one unrelated
 temporary-artifact cleanup failure in the unchanged XLSX export test; that test
 passed separately and the repeated complete suite passed. Export code was not
 changed. Frontend production source and deployed assets are unchanged.
+
+## Follow-up: omitted lists for empty destination statuses
+
+Shopee's live `get_item_list` response omits `item` when a status has no
+products. The Gitashop creation gateway now treats that omission as an empty
+list only with integer `total_count=0` and boolean `has_next_page=false`.
+Explicit null/malformed lists, unknown totals/pagination, positive totals
+without lists and inconsistent final counts still block before image transfers
+or product creation. All six status groups and duplicate detection remain active.
+
+The HTTP-boundary regressions reproduced two failures before the fix
+(**10 tests / 300 assertions**, two failures), then passed
+(**10 tests / 399 assertions**). They cover continuation through omitted empty
+lists, a duplicate SKU in the deleted catalog, and eight incomplete/contradictory
+response cases that must remain blocked.
+
+A complete GET-only live catalog scan passed through the production gateway:
+60 NORMAL products, 61 SELLER_DELETE products, and four explicitly empty status
+groups. All 121 product identities were read and checked; no exact-SKU/source
+identity or title candidates matched the selected source. The diagnostic
+enforced GET-only requests and performed no uploads, product creation,
+variation initialization, publication or inventory writes.
+
+Independent scoped review found no actionable issues. Full backend verification
+passed: **746 tests / 11,497 assertions**, exit 0 (03:15.142). PHP syntax checks
+and `git diff --check` passed. Frontend source and published assets are unchanged.

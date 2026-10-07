@@ -27,6 +27,11 @@ class StockHubGitaProductGateway
     public function page(string $status, int $offset): array
     {
         $p = $this->transport->read(StockHubGitaProductTransport::TARGET, '/api/v2/product/get_item_list', ['offset' => $offset, 'page_size' => 100, 'item_status' => $status]);
+        // Shopee omits `item` for a status with no products. Require explicit
+        // empty-page evidence; malformed or unknown coverage must still block.
+        if (!array_key_exists('item', $p) && ($p['total_count'] ?? null) === 0 && ($p['has_next_page'] ?? null) === false) {
+            $p['item'] = [];
+        }
         $this->need(is_array($p['item'] ?? null) && array_is_list($p['item']) && is_bool($p['has_next_page'] ?? null) && is_int($p['total_count'] ?? null) && $p['total_count'] >= 0, 'Katalog Gita belum lengkap.');
         $ids = [];
         foreach ($p['item'] as $row) { $id = StockHubGitaProductSource::id($row['item_id'] ?? null); $this->need($id !== null && !in_array($id, $ids, true), 'Identitas katalog Gita ambigu.'); $ids[] = $id; }
