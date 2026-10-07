@@ -17,6 +17,7 @@ class StockHubGitaProductGateway
     public function source(string $id): array { return $this->sourceReader->read($id); }
     public function categories(): array { return $this->metadata->categories(); }
     public function context(array $source, array $context): array { return $this->metadata->validate($source, $context); }
+    public function correctionField(string $key): array { return $this->metadata->field($key); }
 
     public function linked(string $id): bool
     {

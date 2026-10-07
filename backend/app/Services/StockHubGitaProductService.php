@@ -51,6 +51,13 @@ class StockHubGitaProductService
         try {
             $row = $this->row($id); $state = json_decode($row->state, true, 512, JSON_THROW_ON_ERROR);
             if ($row->attempted_at && !$row->remote_product_id) { $this->save($id, 'submitted_unverified', $state, 'Hasil pembuatan induk belum diketahui. Periksa Seller Center; produk tidak akan dibuat ulang.'); return $this->show($id); }
+            if (!$row->remote_product_id && in_array($row->status, ['scanning','uploading','submitting'], true)
+                && (!StockHubGitaProductMetadata::positiveDimensions($state['context']['dimension'] ?? null)
+                    || ($row->status === 'submitting' && !StockHubGitaProductMetadata::positiveDimensions($state['payload']['dimension'] ?? null)))) {
+                $state['required_fields'] = [$this->gateway->correctionField('dimension')];
+                $this->save($id, 'blocked', $state, 'Lengkapi panjang, lebar, dan tinggi paket dalam cm dengan bilangan bulat lebih dari nol.');
+                return $this->show($id);
+            }
             $this->lease->acquire();
             $this->gateway->identities($state['identities'] ?? null);
             if ($row->remote_product_id) { $this->afterParent($row, $state, $owner); }
@@ -181,6 +188,10 @@ class StockHubGitaProductService
     {
         $s = json_decode($row->state, true, 512, JSON_THROW_ON_ERROR); $status = $row->status;
         if ($row->attempted_at && !$row->remote_product_id && $status !== 'rejected') { $status = 'submitted_unverified'; }
-        return ['run_id' => $row->id, 'source_product_id' => $row->source_product_id, 'status' => $status, 'stage' => $status, 'message' => $s['message'] ?? '', 'can_continue' => in_array($status, self::RUNNING, true), 'can_retry' => !$row->remote_product_id && in_array($status, ['blocked','rejected'], true), 'remote_product_id' => $row->remote_product_id, 'variant_count' => count($s['source']['variants'] ?? []), 'progress' => $s['progress'], 'required_fields' => $s['required_fields'] ?? [], 'context' => $s['context'], 'result' => $s['result'] ?? null, 'next_step_after_ms' => $status === 'initializing_variants' && !$row->variants_attempted_at ? $this->delay($s) : 0];
+        $fields = $s['required_fields'] ?? [];
+        if ($status === 'rejected' && !$row->remote_product_id && ($s['rejection']['field'] ?? null) === 'dimension' && !in_array('dimension', array_column($fields, 'key'), true)) {
+            $fields[] = $this->gateway->correctionField('dimension');
+        }
+        return ['run_id' => $row->id, 'source_product_id' => $row->source_product_id, 'status' => $status, 'stage' => $status, 'message' => $s['message'] ?? '', 'can_continue' => in_array($status, self::RUNNING, true), 'can_retry' => !$row->remote_product_id && in_array($status, ['blocked','rejected'], true), 'remote_product_id' => $row->remote_product_id, 'variant_count' => count($s['source']['variants'] ?? []), 'progress' => $s['progress'], 'required_fields' => $fields, 'context' => $s['context'], 'result' => $s['result'] ?? null, 'next_step_after_ms' => $status === 'initializing_variants' && !$row->variants_attempted_at ? $this->delay($s) : 0];
     }
 }

@@ -455,6 +455,9 @@ class StockHubGitaProductTest extends TestCase
         $this->assertStringContainsString($guidance, $r['message']);
         $saved = json_decode(DB::table('stock_hub_gita_product_runs')->where('id', $r['run_id'])->value('state'), true);
         $this->assertSame(['code' => 'product.error_param', 'field' => $field], $saved['rejection']);
+        if ($field === 'dimension') {
+            $this->assertSame([['key' => 'dimension', 'label' => 'Dimensi paket', 'type' => 'number', 'unit' => 'cm']], $r['required_fields']);
+        }
         $this->assertStringNotContainsString('secret', json_encode($saved));
         $this->assertStringNotContainsString('private-request', json_encode($saved));
         $this->assertStringNotContainsString($reason, json_encode($saved));
@@ -470,6 +473,97 @@ class StockHubGitaProductTest extends TestCase
             'structured message' => [['error' => 'product.error_param', 'message' => ['access_token' => 'secret']], 'product.error_param'],
             'ambiguous fields' => [['error' => 'product.error_param', 'message' => 'image and category_id invalid; secret'], 'product.error_param'],
         ];
+    }
+
+    public static function invalidPackageDimensions(): array
+    {
+        return [
+            'all zero' => [['package_length' => 0, 'package_width' => 0, 'package_height' => 0]],
+            'one zero' => [['package_length' => 10, 'package_width' => 20, 'package_height' => 0]],
+            'negative' => [['package_length' => 10, 'package_width' => -1, 'package_height' => 3]],
+            'fractional' => [['package_length' => 10, 'package_width' => 20, 'package_height' => 0.5]],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('invalidPackageDimensions')]
+    public function test_invalid_package_dimensions_require_correction_before_images_or_parent_submission(array $dimension): void
+    {
+        $this->sourceExtras = ['dimension' => $dimension];
+        $r = $this->finish($this->start());
+        $this->assertSame('blocked', $r['status']);
+        $this->assertSame(['dimension'], array_column($r['required_fields'], 'key'));
+        $this->assertSame([], $this->writes);
+        $this->assertSame([], $this->downloadRequests);
+        $this->assertNull(DB::table('stock_hub_gita_product_runs')->where('id', $r['run_id'])->value('attempted_at'));
+        $r = $this->finish($this->start(['dimension' => ['package_length' => 12, 'package_width' => 21, 'package_height' => 4]]));
+        $this->assertSame('success', $r['status'], json_encode($r));
+        $this->assertSame(['package_length' => 12, 'package_width' => 21, 'package_height' => 4], $this->writes[0][1]['dimension']);
+        $this->assertSame(19, DB::table('stock_master')->value('stock'));
+        Http::assertNotSent(fn ($request) => $request->method() !== 'GET' && str_contains($request->url(), 'shop_id=11'));
+    }
+
+    public function test_operator_cannot_retry_zero_dimensions_past_metadata_validation(): void
+    {
+        $r = $this->finish($this->start(['dimension' => ['package_length' => 0, 'package_width' => 0, 'package_height' => 0]]));
+        $this->assertSame('blocked', $r['status']);
+        $this->assertSame(['dimension'], array_column($r['required_fields'], 'key'));
+        $this->assertSame([], $this->writes);
+        $this->assertSame([], $this->downloadRequests);
+    }
+
+    public function test_saved_dimension_rejection_recovers_editable_fields_without_remote_calls_or_state_writes(): void
+    {
+        $r = $this->start();
+        $state = json_decode(DB::table('stock_hub_gita_product_runs')->where('id', $r['run_id'])->value('state'), true);
+        $state['rejection'] = ['code' => 'product.error_param', 'field' => 'dimension'];
+        $state['context']['dimension'] = ['package_length' => 0, 'package_width' => 0, 'package_height' => 0];
+        $encoded = json_encode($state);
+        DB::table('stock_hub_gita_product_runs')->where('id', $r['run_id'])->update(['status' => 'rejected', 'attempted_at' => now(), 'state' => $encoded]);
+        $recovered = $this->getJson($this->base.'/source/10')->assertOk()->json('data');
+        $this->assertTrue($recovered['can_retry']);
+        $this->assertSame(['dimension'], array_column($recovered['required_fields'], 'key'));
+        $this->assertSame($encoded, DB::table('stock_hub_gita_product_runs')->where('id', $r['run_id'])->value('state'));
+        Http::assertNothingSent();
+
+        DB::table('stock_hub_gita_product_runs')->where('id', $r['run_id'])->update(['status' => 'submitted_unverified']);
+        $uncertain = $this->getJson($this->base.'/source/10')->assertOk()->json('data');
+        $this->assertFalse($uncertain['can_retry']);
+        $this->assertSame([], $uncertain['required_fields']);
+        $this->assertSame($encoded, DB::table('stock_hub_gita_product_runs')->where('id', $r['run_id'])->value('state'));
+        Http::assertNothingSent();
+    }
+
+    public static function legacyDimensionStages(): array
+    {
+        return [
+            'scanning' => ['scanning', true],
+            'uploading' => ['uploading', true],
+            'submitting' => ['submitting', true],
+            'invalid submission payload' => ['submitting', false],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('legacyDimensionStages')]
+    public function test_legacy_staged_zero_dimensions_block_before_any_remote_request(string $stage, bool $invalidContext): void
+    {
+        $r = $this->start();
+        for ($i = 0; $i < 40 && $r['status'] !== $stage; $i++) {
+            $r = $this->postJson($this->base.'/runs/'.$r['run_id'].'/step')->assertOk()->json('data');
+        }
+        $this->assertSame($stage, $r['status']);
+        $state = json_decode(DB::table('stock_hub_gita_product_runs')->where('id', $r['run_id'])->value('state'), true);
+        $zero = ['package_length' => 0, 'package_width' => 0, 'package_height' => 0];
+        if ($invalidContext) { $state['context']['dimension'] = $zero; }
+        if ($stage === 'submitting') { $state['payload']['dimension'] = $zero; }
+        DB::table('stock_hub_gita_product_runs')->where('id', $r['run_id'])->update(['state' => json_encode($state)]);
+        $requests = count(Http::recorded());
+        $r = $this->postJson($this->base.'/runs/'.$r['run_id'].'/step')->assertOk()->json('data');
+        $this->assertSame('blocked', $r['status']);
+        $this->assertTrue($r['can_retry']);
+        $this->assertSame(['dimension'], array_column($r['required_fields'], 'key'));
+        $this->assertSame($requests, count(Http::recorded()));
+        $this->assertSame([], $this->writes);
+        $this->assertNull(DB::table('stock_hub_gita_product_runs')->where('id', $r['run_id'])->value('attempted_at'));
     }
 
     #[\PHPUnit\Framework\Attributes\DataProvider('untrustedParentRejections')]

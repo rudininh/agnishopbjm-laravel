@@ -152,3 +152,53 @@ finding closed and reran the focused suite (**6 tests / 830 assertions**).
 PHP syntax checks and `git diff --check` passed. The original rejected source
 still has no new operator creation attempt; its specific earlier rejection
 cause remains unknown. Frontend production assets are unchanged.
+
+## Follow-up: positive package dimensions and saved rejection corrections
+
+An actual parent rejection identified package dimensions; its saved parent
+payload had length, width and height all zero. Metadata previously accepted
+zero dimensions when the category marked dimensions optional, even though
+the creation payload always supplied the dimension object. Parent dimensions
+now require three positive integer centimetre values before image transfers
+or submission. Unknown measurements are requested from the operator.
+
+Read-only snapshots of explicit dimension rejections without a known parent
+now include the existing grouped dimension correction descriptor. This also
+works for prior saved rejections without rewriting their state or attempt
+markers. Uncertain attempts and known parents retain their existing guards.
+The existing frontend already renders three labelled positive integer cm
+inputs and submits corrected context only after the operator confirms.
+
+Regression evidence: **7 tests / 708 assertions**, four expected failures
+before the fix; **7 tests / 703 assertions**, exit 0 after the fix. These cover
+all-zero and partially zero dimensions, negative/fractional values, explicit
+zero correction inputs, and existing safe rejection recovery. Added recovery
+coverage verifies GET-only projection, unchanged durable state and exclusion
+of uncertain attempts. Full creation suite: **78 tests / 6,795 assertions**;
+existing frontend Gita controller/form suite: **39 tests**, exit 0.
+
+The actual saved rejection's local recovery GET returned HTTP 200 and the
+dimension descriptor, with its run row unchanged. GET-only live source and
+metadata preflight now requests dimension correction for all 25 variants;
+no model dimension overrides were present. This verification did not upload
+images, create products, initialize variants, publish or change inventory.
+
+Independent review identified staged runs prepared under the earlier zero
+validation. The runner now applies the same pure dimension check before
+resuming scanning, uploads or submission without a known/attempted parent;
+submission also checks the saved payload dimensions. Invalid legacy state
+becomes an editable block before any remote request or attempt marker.
+Known/uncertain parent recovery remains unchanged. Four realistic staged-run
+regressions first reproduced the bypass (**4 tests / 212 assertions**, four
+failures); the combined correction/recovery/guard suite then passed
+**15 tests / 1,630 assertions**. The backend before this final legacy guard
+passed **757 tests / 12,433 assertions**, exit 0 (02:21.910).
+
+The independent reviewer closed the staged-run finding and verified
+**17 tests / 1,778 assertions**, exit 0, including known-parent and uncertain
+recovery. Lease release is safe when the new pure guard returns before acquire.
+
+Final backend verification passed **761 tests / 12,643 assertions**, exit 0
+(03:33.826), after the staged-run guard. PHP syntax checks and
+`git diff --check` passed. Frontend source and deployed assets are unchanged;
+the existing grouped correction form consumes the new recovery descriptor.

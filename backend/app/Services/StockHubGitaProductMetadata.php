@@ -12,6 +12,15 @@ class StockHubGitaProductMetadata
     private function read(string $path, array $q = []): array { return $this->transport->read(StockHubGitaProductTransport::TARGET, '/api/v2/'.$path, $q); }
     private function need(bool $ok, string $message): void { StockHubGitaProductSource::need($ok, $message); }
 
+    public static function positiveDimensions(mixed $dimension): bool
+    {
+        if (!is_array($dimension)) { return false; }
+        foreach (['package_length', 'package_width', 'package_height'] as $key) {
+            if (!isset($dimension[$key]) || !is_int($dimension[$key]) || $dimension[$key] <= 0) { return false; }
+        }
+        return true;
+    }
+
     public function categories(): array
     {
         $data = $this->read('product/get_category');
@@ -39,7 +48,7 @@ class StockHubGitaProductMetadata
         if (!is_numeric($weight) || !is_finite((float) $weight) || (float) $weight <= 0) { $fields[] = $this->field('weight'); }
         else { $context['weight'] = 0 + $weight; }
         $dim = $input['dimension'] ?? $p['dimension'] ?? null;
-        if (!is_array($dim) || count(array_filter(['package_length','package_width','package_height'], fn ($f) => !isset($dim[$f]) || !is_int($dim[$f]) || $dim[$f] < 0)) > 0 || (!empty($limits['dimension_limit']['dimension_mandatory']) && min($dim) <= 0)) { $fields[] = $this->field('dimension'); }
+        if (!self::positiveDimensions($dim)) { $fields[] = $this->field('dimension'); }
         else { $context['dimension'] = $dim; }
         $chart = $input['size_chart_image_url'] ?? $source['chart'];
         if ($chart !== '') {
