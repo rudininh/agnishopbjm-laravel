@@ -99,7 +99,9 @@ class StockHubGitaProductSource
                 $mid = self::id($m['model_id'] ?? null); $msku = self::sku($m['model_sku'] ?? null, $id);
                 self::need($mid !== null && !in_array($mid, $ids, true) && !in_array($msku, $skus, true), 'ID atau SKU varian sumber duplikat.');
                 self::need(!isset($m['model_status']) || $m['model_status'] === 'MODEL_NORMAL', 'Varian sumber tidak tersedia.');
-                self::need(empty($m['is_fulfillment_by_shopee']) && empty($m['ssp_id']) && empty($m['cssp_id']), 'Pemenuhan atau katalog sumber tidak dapat dipindahkan.');
+                // SSP/CSSP are optional source catalog bindings, not fulfillment modes.
+                // The supported projection creates an independent listing without those IDs.
+                self::need(empty($m['is_fulfillment_by_shopee']), 'Mode pemenuhan varian Shopee belum didukung.');
                 $index = $m['tier_index'] ?? null;
                 self::need(is_array($index) && array_is_list($index) && count($index) === count($tiers), 'Indeks varian sumber belum lengkap.');
                 foreach ($index as $t => $o) { self::need(is_int($o) && $o >= 0 && isset($tiers[$t]['options'][$o]), 'Indeks opsi varian sumber tidak valid.'); }

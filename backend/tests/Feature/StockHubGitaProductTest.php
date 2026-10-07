@@ -27,6 +27,8 @@ class StockHubGitaProductTest extends TestCase
     private array $downloadOptions = [];
     private array $downloadRequests = [];
     private array $sourceExtras = [];
+    private array $sourceModelExtras = [];
+    private array $targetModelExtras = [];
 
     protected function setUp(): void
     {
@@ -76,6 +78,7 @@ class StockHubGitaProductTest extends TestCase
                 if ($id === '90' && $this->mode === 'target_missing_sku') { unset($data['item_list'][0]['item_sku']); }
             } elseif ($path === '/api/v2/product/get_model_list') {
                 $data = $shop === '11' ? $this->sourceModels() : ['model' => $this->models, 'tier_variation' => $this->targetTiers()];
+                if ($shop === '22' && $data['model'] !== []) { $data['model'][0] = [...$data['model'][0], ...$this->targetModelExtras]; }
             } elseif ($path === '/api/v2/product/get_category') {
                 $data = ['category_list' => [['category_id' => 100493, 'display_category_name' => 'Hijab Instan', 'parent_category_id' => 100, 'has_children' => $this->mode === 'category']]];
             } elseif ($path === '/api/v2/product/get_item_limit') {
@@ -167,6 +170,7 @@ class StockHubGitaProductTest extends TestCase
         if ($this->mode === 'model_dts') { $models[0]['pre_order'] = ['is_pre_order' => false, 'days_to_ship' => 3]; }
         if ($this->mode === 'model_bad_weight') { $models[0]['weight'] = -1; }
         if ($this->mode === 'model_overrides') { $models[0]['weight'] = '0.7'; $models[0]['dimension'] = ['package_length' => 12, 'package_width' => 21, 'package_height' => 4]; $models[0]['pre_order'] = ['is_pre_order' => true, 'days_to_ship' => 4]; $models[0]['gtin_code'] = '00'; }
+        $models[0] = [...$models[0], ...$this->sourceModelExtras];
         $tiers = [['name' => 'Color', 'option_list' => [['option' => 'Green', 'image' => ['image_id' => 'source-green', 'image_url' => 'https://img.test/green.jpg']], ['option' => 'Blue', 'image' => ['image_id' => 'source-blue', 'image_url' => 'https://img.test/blue.jpg']]]]];
         if ($this->mode === 'option_missing_url') { unset($tiers[0]['option_list'][0]['image']['image_url']); }
         if ($this->mode === 'two_tiers') {
@@ -256,6 +260,53 @@ class StockHubGitaProductTest extends TestCase
         $this->mode = 'variantless'; $r = $this->finish($this->start());
         $this->assertSame('success', $r['status']); $this->assertCount(2, $this->writes);
         $this->assertSame('0', $r['result']['skus'][0]['id']);
+    }
+
+    public function test_seller_fulfilled_catalog_bound_models_copy_without_transferring_catalog_ids(): void
+    {
+        $this->sourceExtras = ['is_fulfillment_by_shopee' => false, 'ssp_id' => 500];
+        $this->sourceModelExtras = ['is_fulfillment_by_shopee' => false, 'ssp_id' => 501, 'cssp_id' => 601];
+        $this->targetModelExtras = ['is_fulfillment_by_shopee' => false, 'ssp_id' => 900, 'cssp_id' => 901];
+        $this->legacyCache();
+        $sourceParent = DB::table('shopee_product')->where('item_id', 10)->first();
+        $sourceModel = DB::table('shopee_product_model')->where('model_id', '101')->first();
+        $r = $this->finish($this->start());
+        $this->assertSame('success', $r['status'], json_encode($r));
+        $this->assertTrue($r['result']['published']);
+        $this->assertCount(3, $this->writes);
+        $init = $this->writes[1][1];
+        $this->assertSame(['INT-10-GREEN', 'INT-10-BLUE'], array_column($init['model'], 'model_sku'));
+        $this->assertSame([150000, 175000], array_column($init['model'], 'original_price'));
+        $this->assertSame([0, 7], array_map(fn ($m) => $m['seller_stock'][0]['stock'], $init['model']));
+        foreach (['ssp_id', 'cssp_id'] as $field) {
+            $this->assertStringNotContainsString('"'.$field.'":', json_encode($this->writes));
+            $this->assertStringNotContainsString('"'.$field.'":', DB::table('stock_hub_gita_product_runs')->where('id', $r['run_id'])->value('state'));
+        }
+        $this->assertEquals($sourceParent, DB::table('shopee_product')->where('item_id', 10)->first());
+        $this->assertEquals($sourceModel, DB::table('shopee_product_model')->where('model_id', '101')->first());
+        $this->assertSame(19, DB::table('stock_master')->value('stock'));
+        $this->assertSame('101', DB::table('marketplace_listings')->where('account_key', 'shopee-agnishopbjm')->value('remote_variant_id'));
+        Http::assertNotSent(fn ($request) => $request->method() !== 'GET' && str_contains($request->url(), 'shop_id=11'));
+    }
+
+    public static function unsupportedShopeeFulfillment(): array
+    {
+        return ['parent' => [true], 'variant' => [false]];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('unsupportedShopeeFulfillment')]
+    public function test_shopee_fulfillment_remains_blocked_before_upload_or_creation(bool $parent): void
+    {
+        if ($parent) { $this->sourceExtras = ['is_fulfillment_by_shopee' => true]; }
+        else { $this->sourceModelExtras = ['is_fulfillment_by_shopee' => true, 'ssp_id' => 501, 'cssp_id' => 601]; }
+        $r = $this->finish($this->start());
+        $this->assertSame('blocked', $r['status']);
+        $this->assertTrue($r['can_retry']);
+        $this->assertNull($r['remote_product_id']);
+        $this->assertSame([], $this->writes);
+        $this->assertSame([], $this->downloadRequests);
+        $this->assertSame(0, $this->uploads);
+        $this->assertSame(19, DB::table('stock_master')->value('stock'));
     }
 
     public function test_invalid_source_or_metadata_blocks_before_any_parent_mutation(): void

@@ -56,3 +56,19 @@ The first real product creation is initiated by the operator. Verification does
 not perform live product creation, variation initialization, publication or stock
 writes. Source inventory and Stock Master quantities are preserved by the flow.
 The feature branch is retained locally without pushing or merging this feature.
+
+## Follow-up: ordinary catalog-bound variants
+
+Seller-fulfilled models may carry optional SSP/CSSP associations. These are
+source catalog relationships, independent of fulfillment mode, and are omitted
+when creating the new target listing. Independently assigned destination catalog
+associations also do not prevent content/model verification. Parent and model
+Fulfillment by Shopee remain blocked before downloads or creation.
+
+The regression reproduced the original block before the fix, then passed with
+preserved SKU/price/stock, verified publication, no transferred catalog IDs, and
+source cache/mapping/Stock Master isolation. Parent/model FBS regressions stayed
+blocked. Focused suite: **3 tests / 138 assertions**; full backend:
+**734 tests / 10,975 assertions**, exit 0. Independent scoped review found no issues.
+The actual source normalizer also succeeded for all 21 variants in a GET-only
+probe; no product creation was performed.
