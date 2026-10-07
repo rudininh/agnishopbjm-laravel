@@ -30,12 +30,26 @@
                   <input v-model="values[`dimension.${dimension.key}`]" type="number" min="1" step="1" :disabled="state.busy" required>
                 </label>
               </div>
+              <div v-else-if="field.key === 'logistic_ids'" class="shipping-fields">
+                <p class="shipping-count" role="status">{{ selectedShipping.length }} layanan dipilih</p>
+                <label v-for="option in field.options || []" :key="option.id" class="shipping-choice">
+                  <input type="checkbox" :checked="selectedShipping.includes(String(option.id))" :disabled="state.busy || disabled || shippingBlocked" @change="toggleShipping(String(option.id), $event.target.checked)">
+                  <span>{{ option.name }}</span>
+                </label>
+                <template v-if="!shippingBlocked && unavailableShipping.length">
+                  <small role="alert">{{ unavailableShipping.length }} layanan tersimpan sudah tidak tersedia. Hapus pilihan tersebut sebelum melanjutkan.</small>
+                  <button type="button" :disabled="state.busy || disabled" @click="removeUnavailableShipping">Hapus layanan yang tidak tersedia</button>
+                </template>
+                <button v-if="regularShipping" type="button" :disabled="state.busy || disabled || shippingBlocked" @click="selectRegularShipping">Pilih Reguler saja</button>
+                <small>Centang layanan yang akan digunakan. Pilihan ini baru dikirim setelah menekan Lengkapi dan lanjutkan.</small>
+              </div>
               <select v-else-if="field.type === 'multiselect' || field.type === 'select'" v-model="values[field.key]" :aria-label="field.label" :multiple="field.type === 'multiselect'" :disabled="state.busy || (field.key === 'logistic_ids' && shippingBlocked)" required>
                 <option v-if="field.type === 'select'" value="">Pilih lokasi</option>
                 <option v-for="option in field.options || []" :key="option.id" :value="String(option.id)">{{ option.name }}</option>
               </select>
               <input v-else v-model="values[field.key]" :aria-label="field.label" :type="field.type === 'number' ? 'number' : field.type === 'url' ? 'url' : 'text'" :min="field.type === 'number' ? '0.000001' : undefined" :step="field.type === 'number' ? 'any' : undefined" :disabled="state.busy" required>
               <small v-if="field.key === 'weight'">Isi berat paket beserta kemasan dalam kg. 200 gram = 0,2 kg.</small>
+              <small v-if="field.key === 'dimension'">Gunakan ukuran paket dalam cm. 100 mm = 10 cm; 100 cm = 1 meter.</small>
               <small v-if="field.key === 'logistic_ids' && shippingLoading">Memuat saluran pengiriman...</small>
               <small v-if="field.key === 'logistic_ids' && shippingError" role="alert">{{ shippingError }} <button type="button" :disabled="shippingLoading || state.busy" @click="loadShippingChannels">Muat pengiriman</button></small>
             </fieldset>
@@ -70,6 +84,10 @@ const shippingOptions = ref([]), shippingLoading = ref(false), shippingError = r
 const shippingNeeded = computed(() => state.value.run?.required_fields?.some(field => field.key === 'logistic_ids' && !field.options?.length))
 const shippingBlocked = computed(() => Boolean(shippingNeeded.value && (shippingLoading.value || !shippingOptions.value.length)))
 const correctionFields = computed(() => (state.value.run?.required_fields || []).map(field => field.key === 'logistic_ids' && !field.options?.length ? { ...field, options: shippingOptions.value } : field))
+const selectedShipping = computed(() => Array.isArray(values.value.logistic_ids) ? values.value.logistic_ids.map(String) : [])
+const availableShipping = computed(() => (correctionFields.value.find(field => field.key === 'logistic_ids')?.options || []).map(option => String(option.id)))
+const unavailableShipping = computed(() => selectedShipping.value.filter(id => !availableShipping.value.includes(id)))
+const regularShipping = computed(() => correctionFields.value.find(field => field.key === 'logistic_ids')?.options?.find(option => String(option.id) === '8003' && /^Reguler(?:\s|\(|$)/i.test(option.name)))
 let alive = true, previousFocus = null
 let storage
 try { storage = globalThis.localStorage } catch {}
@@ -108,6 +126,18 @@ async function loadCategories() {
   } catch { if (alive) categoryError.value = 'Kategori belum dapat dimuat. Coba kembali.' }
   finally { if (alive) categoriesLoading.value = false }
 }
+function toggleShipping(id, checked) {
+  if (props.disabled || state.value.busy || shippingBlocked.value) return
+  values.value.logistic_ids = checked ? [...new Set([...selectedShipping.value, id])] : selectedShipping.value.filter(value => value !== id)
+}
+function selectRegularShipping() {
+  if (props.disabled || state.value.busy || shippingBlocked.value || !regularShipping.value) return
+  values.value.logistic_ids = [String(regularShipping.value.id)]
+}
+function removeUnavailableShipping() {
+  if (props.disabled || state.value.busy || shippingBlocked.value) return
+  values.value.logistic_ids = selectedShipping.value.filter(id => availableShipping.value.includes(id))
+}
 async function request(item, inspect = false) {
   if (props.disabled || state.value.busy) return
   previousFocus = globalThis.document?.activeElement
@@ -141,5 +171,8 @@ fieldset { margin: 0; padding: 0; border: 0; min-inline-size: 0; display: grid; 
 input, select { width: 100%; box-sizing: border-box; padding: 9px; border: 1px solid #cbd5e1; border-radius: 5px; font: inherit; }
 button { padding: 9px 12px; border: 1px solid #94a3b8; border-radius: 6px; background: #f8fafc; color: #0f172a; cursor: pointer; } button:disabled { opacity: .5; cursor: not-allowed; }
 .dimension-fields { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.shipping-fields { display: grid; gap: 8px; } .shipping-count { margin: 0; font-weight: 600; }
+.shipping-choice { display: flex; align-items: center; gap: 8px; padding: 8px; border: 1px solid #cbd5e1; border-radius: 5px; }
+.shipping-choice input { width: 18px; height: 18px; margin: 0; flex-shrink: 0; } .shipping-fields button { justify-self: start; }
 .creation-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 18px; } ul { padding-left: 18px; }
 </style>

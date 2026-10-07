@@ -97,8 +97,11 @@ test('Gita form corrects a rejected HTTPS chart and retains grouped shipping and
     assert.ok(chart)
     assert.ok(view.text(view.root).includes('Fashion / Tas'))
     const selects = fields.filter(el => el.type === 'select')
-    assert.equal(selects.length, 3); assert.equal(selects.filter(el => el.props.multiple).length, 1)
-    numbers[1].props['onUpdate:modelValue']('12'); selects[1].props['onUpdate:modelValue'](['2']); selects[2].props['onUpdate:modelValue']('new'); chart.props['onUpdate:modelValue']('https://cdn.example/corrected-chart.jpg')
+    assert.equal(selects.length, 2)
+    const shipping = fields.filter(el => el.type === 'input' && el.props.type === 'checkbox')
+    assert.equal(shipping.length, 2); assert.equal(shipping[0].props.checked, true); assert.equal(shipping[1].props.checked, false)
+    assert.equal(view.button('Pilih Reguler saja'), undefined)
+    numbers[1].props['onUpdate:modelValue']('12'); shipping[0].props.onChange({ target: { checked: false } }); shipping[1].props.onChange({ target: { checked: true } }); selects[1].props['onUpdate:modelValue']('new'); chart.props['onUpdate:modelValue']('https://cdn.example/corrected-chart.jpg')
     await tick(); view.all().find(el => el.type === 'form').props.onSubmit({ preventDefault() {} }); await tick()
     assert.deepEqual(calls.slice(-2), ['GET', 'POST'])
     assert.deepEqual(payloads[0].context, { ...saved, dimension: { package_length: 12, package_width: 20, package_height: 3 }, logistic_ids: ['2'], location_id: 'new', size_chart_image_url: 'https://cdn.example/corrected-chart.jpg' })
@@ -164,7 +167,7 @@ test('Gita request wrappers use exact paths and extended start/step/category tim
 })
 
 test('weight rejection loads current named shipping choices before allowing explicit corrections', async () => {
-  const saved = { weight: 0.2, dimension: { package_length: 100, package_width: 100, package_height: 5 }, logistic_ids: ['8003', '8005'] }
+  const saved = { weight: 0.2, dimension: { package_length: 100, package_width: 100, package_height: 5 }, logistic_ids: ['8003', '8005', '8007', '8008'] }
   const required_fields = [{ key: 'weight', label: 'Berat paket', type: 'number', unit: 'kg' }, { key: 'dimension', label: 'Dimensi paket', type: 'number', unit: 'cm' }, { key: 'logistic_ids', label: 'Pengiriman Gita', type: 'multiselect', options: [] }]
   let resolveOptions; const payloads = []
   const api = { shopeeItems: async () => ({ data: { items: [structuredClone(item)] } }),
@@ -176,20 +179,35 @@ test('weight rejection loads current named shipping choices before allowing expl
     await tick(); view.button('Buat di Gitashop').props.onClick(); await tick()
     assert.equal(typeof resolveOptions, 'function'); assert.equal(view.button('Lengkapi dan lanjutkan').props.disabled, true)
     view.all().find(el => el.type === 'form').props.onSubmit({ preventDefault() {} }); await tick(); assert.equal(payloads.length, 0)
-    resolveOptions(envelope([{ id: '8003', name: 'Reguler (Cashless)' }, { id: '8005', name: 'Hemat Kargo' }])); await tick()
+    resolveOptions(envelope([{ id: '8003', name: 'Reguler (Cashless)' }, { id: '8005', name: 'Hemat Kargo' }, { id: '8007', name: 'Instant' }, { id: '8008', name: 'Instant Prioritas' }])); await tick()
     assert.ok(view.text(view.root).includes('Reguler (Cashless)')); assert.ok(view.text(view.root).includes('Hemat Kargo'))
     const dialog = view.all().find(el => el.props.role === 'dialog')
+    const shipping = view.all().filter(el => {
+      if (el.type !== 'input' || el.props.type !== 'checkbox') return false
+      for (let parent = el.parent; parent; parent = parent.parent) if (parent === dialog) return true
+      return false
+    })
+    assert.equal(shipping.length, 4); assert.deepEqual(shipping.map(el => el.props.checked), [true, true, true, true])
+    assert.ok(view.text(view.root).includes('4 layanan dipilih')); assert.equal(payloads.length, 0)
+    view.button('Pilih Reguler saja').props.onClick(); await tick()
+    assert.deepEqual(shipping.map(el => el.props.checked), [true, false, false, false])
+    assert.ok(view.text(view.root).includes('1 layanan dipilih')); assert.equal(payloads.length, 0)
     const numbers = view.all().filter(el => {
       if (el.type !== 'input' || el.props.type !== 'number') return false
       for (let parent = el.parent; parent; parent = parent.parent) if (parent === dialog) return true
       return false
     })
     assert.equal(numbers.length, 4)
-    numbers[1].props['onUpdate:modelValue']('10'); numbers[2].props['onUpdate:modelValue']('10')
-    view.all().find(el => el.type === 'select' && el.props.multiple).props['onUpdate:modelValue'](['8003']); await tick()
+    assert.deepEqual(numbers.map(el => el.value), ['0.2', '100', '100', '5'])
+    shipping[0].props.onChange({ target: { checked: false } }); await tick()
+    assert.ok(view.text(view.root).includes('0 layanan dipilih'))
+    view.all().find(el => el.type === 'form').props.onSubmit({ preventDefault() {} }); await tick()
+    assert.equal(payloads.length, 0)
+    assert.ok(view.all().some(el => el.props.role === 'alert'))
+    view.button('Pilih Reguler saja').props.onClick(); await tick()
     view.all().find(el => el.type === 'form').props.onSubmit({ preventDefault() {} }); await tick()
     assert.equal(payloads.length, 1)
-    assert.deepEqual(payloads[0].context, { ...saved, dimension: { package_length: 10, package_width: 10, package_height: 5 }, logistic_ids: ['8003'] })
+    assert.deepEqual(payloads[0].context, { ...saved, logistic_ids: ['8003'] })
   } finally { resolveOptions?.(envelope([])); view.app.unmount() }
 })
 
@@ -202,6 +220,28 @@ test('unavailable shipping choices keep weight correction from posting a new pro
     await tick(); view.button('Buat di Gitashop').props.onClick(); await tick()
     assert.ok(view.button('Muat pengiriman')); assert.equal(view.button('Lengkapi dan lanjutkan').props.disabled, true)
     view.all().find(el => el.type === 'form').props.onSubmit({ preventDefault() {} }); await tick()
+  } finally { view.app.unmount() }
+})
+
+test('saved unavailable shipping choices can be explicitly removed without requiring Reguler', async () => {
+  const saved = { weight: 0.2, logistic_ids: ['7001', '9001'] }, payloads = []
+  const required_fields = [{ key: 'logistic_ids', type: 'multiselect', label: 'Pengiriman', options: [{ id: '9001', name: 'Courier A' }] }]
+  const api = { shopeeItems: async () => ({ data: { items: [structuredClone(item)] } }),
+    gitaProductCreationSource: async () => envelope(snapshot('rejected', { can_retry: true, context: saved, required_fields })),
+    startGitaProductCreation: async payload => { payloads.push(payload); return envelope(snapshot('success', { result: { product_id: '200', published: true, skus: [] } })) } }
+  const view = mount(await loadComponent('../src/pages/ShopeeStock.vue', api), { unified: true, accountKey: 'shopee-agnishopbjm' })
+  try {
+    await tick(); view.button('Buat di Gitashop').props.onClick(); await tick()
+    assert.equal(view.button('Pilih Reguler saja'), undefined)
+    assert.ok(view.text(view.root).includes('2 layanan dipilih'))
+    view.all().find(el => el.type === 'form').props.onSubmit({ preventDefault() {} }); await tick()
+    assert.equal(payloads.length, 0)
+    assert.ok(view.button('Hapus layanan yang tidak tersedia'))
+    view.button('Hapus layanan yang tidak tersedia').props.onClick(); await tick()
+    assert.equal(payloads.length, 0)
+    assert.ok(view.text(view.root).includes('1 layanan dipilih'))
+    view.all().find(el => el.type === 'form').props.onSubmit({ preventDefault() {} }); await tick()
+    assert.deepEqual(payloads[0].context, { weight: 0.2, logistic_ids: ['9001'] })
   } finally { view.app.unmount() }
 })
 

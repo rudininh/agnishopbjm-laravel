@@ -240,3 +240,35 @@ were performed by verification.
 Published local `/assets/index-ofU4So9N.js` and
 `/assets/index-DTUm3WsL.css` return HTTP 200 and match the SHA-256 hashes of
 the successful `frontend/dist` build. Prior assets are retained for open tabs.
+
+## Follow-up: visible shipping selections
+
+Repeated explicit weight rejection persisted with the same positive weight,
+package measurements and four enabled shipping services. This confirms the
+submitted choices, but does not prove which Shopee business rule rejected them.
+No physical measurements or cargo minimums are inferred.
+
+The correction form now renders named shipping checkboxes and a selection
+count. Saved choices remain intact until an operator edits them. A current
+Reguler option (ID8003 and a Reguler name) enables an explicit local-only
+`Pilih Reguler saja` action. It preserves weight/dimensions and does not submit.
+The form also explains millimeter/centimeter conversion. Unavailable/loading
+metadata still prevents submission, and an empty selection remains invalid.
+
+Real-renderer RED reproduced the missing explicit controls in two cases;
+GREEN passed all 12 existing UI tests. Independent review found that obsolete
+saved shipping IDs could become impossible to remove without a Reguler option.
+An additional regression first failed on the missing removal action, then
+passed with an explicit `Hapus layanan yang tidak tersedia` control. That
+action removes only unavailable choices and preserves all current selections.
+Final UI suite: **13 tests**, full frontend: **164 tests**, independent affected
+review: **42 tests**, all exit 0; no remaining actionable review findings.
+Vite build passed with the existing main-chunk size warning. Backend source is
+unchanged, so the previously verified backend suite was not repeated.
+
+Published route and `/assets/index-DczuWfPL.js`, `/assets/index-Cp0ZQYv9.css`
+returned HTTP 200; served asset SHA-256 hashes match the final dist build.
+Earlier published assets are retained for open tabs. The in-app browser check
+could not run because its tool connection failed before setup; component
+behavior and HTTP publication were verified instead. No live creation,
+upload, model initialization, publication or inventory write was performed.

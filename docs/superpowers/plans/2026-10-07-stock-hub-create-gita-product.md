@@ -135,3 +135,23 @@ assert.equal(creationRowResult({status:'partial_unverified',result:{product_id:'
 - [x] Publish frontend/dist index.html and hashed assets to backend/public using Copy-Item -Path wildcard; verify served route/assets and browser (read-only/intercepted, never actual create).
 - [x] Read-only live Gita source/metadata/payload preflight on representative source confirms actual contracts and no source/Stock Master/run writes. Correct any contract incompatibility with test-first fix and scoped review.
 - [x] Record verified durable architecture/deployment facts in project memory, commit verification docs/published assets; keep local feature branch with no push/merge unless newly instructed. Retain ignored workflow evidence; never retry prior rejected recursive cleanup.
+
+## Follow-up: explicit shipping correction selection (2026-10-08)
+
+The existing approved editable shipping correction workflow needs clearer selection controls: the native multiple-select obscures saved selections. This changes only the local form; the Shopee weight rule remains unproven.
+
+**Files:** `frontend/src/components/StockHubGitaProductCreation.vue`, `frontend/tests/stockHubGitaProductCreationUi.test.js`, and the verification document.
+
+- [x] Update real-renderer tests and observe RED: saved four shipping services stay selected after options load; explicit Reguler action deselects the others without POST or measurement changes; individual checkbox edits reach the submitted context. Keep unavailable-options guard tests.
+- [x] Render labelled checkboxes for `logistic_ids`, a selection count, and a `Pilih Reguler saja` type=button action only for current option ID8003 with a Reguler name. Use explicit checked/change handlers; retain all enabled options and existing context validation. Explicitly remove unavailable saved choices only on an operator action.
+
+```js
+values.value.logistic_ids = checked
+  ? [...new Set([...selected, id])]
+  : selected.filter(value => value !== id)
+// Only on an explicit convenience-button click:
+values.value.logistic_ids = [String(regularShipping.value.id)]
+```
+
+- [x] Run `node --test tests/stockHubGitaProductCreationUi.test.js`, `npm test`, `npm run build` from frontend; request scoped read-only review. Publish dist assets with prior assets retained; verify HTTP200 and matching hashes. No live create calls.
+- [x] Record evidence and durable UI behavior, commit locally, and give the operator exact retry steps without claiming Shopee acceptance.
