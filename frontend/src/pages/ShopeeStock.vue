@@ -148,7 +148,9 @@
                       <span class="store-pill">{{ item.shop_name || 'Agni Shop Banjarmasin' }}</span>
                       <small v-if="productPresenceInfo(item).message" :class="['destination-info', { 'destination-missing': productPresenceInfo(item).missingCount > 0 }]">{{ productPresenceInfo(item).message }}</small>
                       <small v-if="creationRowResult(creationRuns[String(item.item_id)])" class="destination-info">{{ creationRowResult(creationRuns[String(item.item_id)]).label }}</small>
-                      <small v-else-if="creationRemembered[String(item.item_id)]" class="destination-info">Status TikTok tersimpan belum dapat diperiksa.</small>
+                      <small v-if="gitaCreationRowResult(gitaCreationRuns[String(item.item_id)])" class="destination-info">{{ gitaCreationRowResult(gitaCreationRuns[String(item.item_id)]).label }}</small>
+                      <small v-else-if="gitaCreationRemembered[String(item.item_id)]" class="destination-info">Status Gitashop tersimpan belum dapat diperiksa.</small>
+                      <small v-if="!creationRuns[String(item.item_id)] && creationRemembered[String(item.item_id)]" class="destination-info">Status TikTok tersimpan belum dapat diperiksa.</small>
                     </div>
                   </div>
                 </td>
@@ -180,8 +182,10 @@
                 </td>
                 <td>
                   <div class="actions">
-                    <button v-if="creationEligible(item)" :disabled="screenMutationBusy || conflictingBusy" @click="creation?.request(item)">Buat di TikTok</button>
-                    <button v-else-if="(creationRuns[String(item.item_id)] || creationRemembered[String(item.item_id)]) && unified && accountKey === 'shopee-agnishopbjm'" :disabled="screenMutationBusy || conflictingBusy" @click="creation?.request(item, true)">{{ !creationRuns[String(item.item_id)] ? 'Muat Status TikTok' : creationRuns[String(item.item_id)].status === 'submitted_unverified' ? 'Periksa Status' : 'Status Produk TikTok' }}</button>
+                    <button v-if="creationEligible(item)" :disabled="screenMutationBusy || conflictingBusy" @click="requestCreation(creation, item)">Buat di TikTok</button>
+                    <button v-else-if="(creationRuns[String(item.item_id)] || creationRemembered[String(item.item_id)]) && unified && accountKey === 'shopee-agnishopbjm'" :disabled="screenMutationBusy || conflictingBusy" @click="requestCreation(creation, item, true)">{{ !creationRuns[String(item.item_id)] ? 'Muat Status TikTok' : creationRuns[String(item.item_id)].status === 'submitted_unverified' ? 'Periksa Status' : 'Status Produk TikTok' }}</button>
+                    <button v-if="gitaCreationEligible(item)" :disabled="screenMutationBusy || conflictingBusy" @click="requestCreation(gitaCreation, item)">Buat di Gitashop</button>
+                    <button v-else-if="(gitaCreationRuns[String(item.item_id)] || gitaCreationRemembered[String(item.item_id)]) && unified && accountKey === 'shopee-agnishopbjm'" :disabled="screenMutationBusy || conflictingBusy" @click="requestCreation(gitaCreation, item, true)">{{ !gitaCreationRuns[String(item.item_id)] ? 'Muat Status Gitashop' : 'Status Produk Gitashop' }}</button>
                     <button title="Lihat varian" @click="toggle(item.item_id)">{{ expanded[item.item_id] ? 'Hide' : 'Show' }}</button>
                     <button v-if="unified" :disabled="conflictingBusy || !mirrorTargets.length || loading || repairBusy || Boolean(updatingSkuKey) || Boolean(deletingVariantKey) || Boolean(syncingItemId)" @click="emit('mirror-stock', { type: 'product', view_account_key: accountKey, product_id: String(item.item_id) })">Samakan Stok Produk</button>
                     <button title="Refresh produk ini" @click="syncProduct(item)" :disabled="conflictingBusy || (syncingItemId === item.item_id)">
@@ -346,16 +350,19 @@
       </section>
     </div>
   </section>
-  <StockHubTiktokProductCreation v-if="unified && accountKey === 'shopee-agnishopbjm'" ref="creation" :disabled="mirrorBusy || screenMutationBusy" @busy="creationBusy = $event" @run="applyCreationRun" @remembered="creationRemembered[$event] = true" />
+  <StockHubTiktokProductCreation v-if="unified && accountKey === 'shopee-agnishopbjm'" ref="creation" :disabled="mirrorBusy || screenMutationBusy || gitaCreationBusy" @busy="creationBusy = $event" @run="applyCreationRun" @remembered="creationRemembered[$event] = true" />
+  <StockHubGitaProductCreation v-if="unified && accountKey === 'shopee-agnishopbjm'" ref="gitaCreation" :disabled="mirrorBusy || screenMutationBusy || creationBusy" @busy="gitaCreationBusy = $event" @run="applyGitaCreationRun" @remembered="gitaCreationRemembered[$event] = true" />
 </template>
 
 <script setup>
 import OrphanVariantCleanup from '@/components/OrphanVariantCleanup.vue'
+import StockHubGitaProductCreation from '@/components/StockHubGitaProductCreation.vue'
 import StockHubTiktokProductCreation from '@/components/StockHubTiktokProductCreation.vue'
 import { computed, onMounted, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { omnichannelService } from '@/services'
 import { shopeeTemplateSku, shopeeSkuRepairRows as skuRepairRows, shopeeAllSkuRepairRows } from './shopeeSkuRepairState'
 import { productPresenceInfo, compareProductPresence } from './marketplaceProductPresenceState'
+import { canCreateGitaProduct, creationRowResult as gitaCreationRowResult } from './stockHubGitaProductCreationState'
 import { canCreateTiktokProduct, creationRowResult } from './stockHubTiktokProductCreationState'
 
 const props = defineProps({
@@ -368,9 +375,22 @@ const props = defineProps({
 
 const emit = defineEmits(['mirror-stock', 'busy'])
 const creation = ref(null), creationBusy = ref(false), creationRuns = reactive({}), creationRemembered = reactive({})
-const conflictingBusy = computed(() => props.mirrorBusy || creationBusy.value)
+const gitaCreation = ref(null), gitaCreationBusy = ref(false), gitaCreationRuns = reactive({}), gitaCreationRemembered = reactive({})
+const conflictingBusy = computed(() => props.mirrorBusy || creationBusy.value || gitaCreationBusy.value)
 const screenMutationBusy = computed(() => Boolean(cleanupBusy.value || repairBusy.value || loading.value || updatingSkuKey.value || deletingVariantKey.value || syncingItemId.value || bulkSkuUpdating.value))
+function requestCreation(dialog, item, inspect = false) {
+  if (conflictingBusy.value || screenMutationBusy.value) return
+  return dialog?.request(item, inspect)
+}
 const creationEligible = item => canCreateTiktokProduct({ unified: props.unified, accountKey: props.accountKey, item, run: creationRuns[String(item.item_id)], remembered: creationRemembered[String(item.item_id)] })
+const gitaCreationEligible = item => canCreateGitaProduct({ unified: props.unified, accountKey: props.accountKey, item, run: gitaCreationRuns[String(item.item_id)], remembered: gitaCreationRemembered[String(item.item_id)] })
+function applyGitaCreationRun(run) {
+  gitaCreationRuns[String(run.source_product_id)] = run
+  if (gitaCreationRowResult(run)?.accepted) {
+    const item = items.value.find(item => String(item.item_id) === String(run.source_product_id))
+    if (item) item.destination_presence = { ...item.destination_presence, 'shopee-gitacollectionbjm': 'present' }
+  }
+}
 function applyCreationRun(run) {
   creationRuns[String(run.source_product_id)] = run
   if (creationRowResult(run)?.accepted) {
@@ -864,7 +884,7 @@ const confirmBulkSkuUpdate = async () => {
   }
 }
 
-watch(() => Boolean(creationBusy.value || screenMutationBusy.value), value => emit('busy', value), { flush: 'sync', immediate: true })
+watch(() => Boolean(creationBusy.value || gitaCreationBusy.value || screenMutationBusy.value), value => emit('busy', value), { flush: 'sync', immediate: true })
 onBeforeUnmount(() => emit('busy', false))
 
 const loadData = async (syncMode = false) => {
@@ -874,6 +894,7 @@ const loadData = async (syncMode = false) => {
     const response = await omnichannelService.shopeeItems(syncMode, accountParams())
     items.value = response.data.items || []
     for (const run of Object.values(creationRuns)) applyCreationRun(run)
+    for (const run of Object.values(gitaCreationRuns)) applyGitaCreationRun(run)
     const syncResult = response.data.sync
 
     if (syncResult?.message) {
@@ -902,6 +923,8 @@ const syncProduct = async (item) => {
   try {
     const response = await omnichannelService.shopeeItems(true, { ...accountParams(), item_id: item.item_id })
     items.value = response.data.items || []
+    for (const run of Object.values(creationRuns)) applyCreationRun(run)
+    for (const run of Object.values(gitaCreationRuns)) applyGitaCreationRun(run)
     syncMessage.value = response.data.sync?.message || response.data.message || ''
     syncTone.value = response.data.sync?.status === 'error' ? 'error' : 'success'
   } catch (error) {
