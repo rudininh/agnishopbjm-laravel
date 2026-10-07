@@ -27,6 +27,8 @@ Read `.superpowers/sdd/2026-10-07-stock-hub-create-gita-product/shopee-contract.
 
 Live metadata proved distinct ready Agni/Gita accounts after successful account-scoped token refresh. Category100493 is leaf Hijab Instan in Gita; source has normal description, brand0, attributes and enabled channels8003/8005/8007/8008. Item limits include title5..255, description20..3000, gallery1..9, tier name1..14, option1..20, prices99..1e9, stock0..1e7; size chart is mandatory and source has a chart image. Never hardcode these sample metadata values: query current Gita limits. Attribute and shipping arrays reordered across fresh source reads.
 
+Read-only integration clarification: the official display name `v2.product.get_variations` uses GET wire path `/api/v2/product/get_variation_tree`, with top-level `data`. A mandatory brand field can explicitly offer NoBrand0; validate that option against the current target brand list. Official read contracts expose no extended-description whitelist flag, so preserve its ordered source projection and block before creation when target whitelist proof is unavailable. The `dimension` correction descriptor (`type:number`, `unit:cm`) represents three grouped integer controls, submitting `dimension.package_length`, `dimension.package_width`, and `dimension.package_height`.
+
 ### Task 1: Guarded Shopee Gita backend end to end
 
 **Files:**
