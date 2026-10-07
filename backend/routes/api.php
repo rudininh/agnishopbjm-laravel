@@ -23,6 +23,7 @@ use App\Http\Controllers\OrphanVariantCleanupController;
 use App\Http\Middleware\StockCatalogMutationLock;
 use App\Http\Controllers\MarketplaceStockMirrorController;
 use App\Http\Controllers\StockHubTiktokProductController;
+use App\Http\Controllers\StockHubGitaProductController;
 
 Route::prefix('marketplace/tiktok-product-creation')->group(function (): void {
     Route::get('categories', [StockHubTiktokProductController::class, 'categories']);
@@ -30,6 +31,14 @@ Route::prefix('marketplace/tiktok-product-creation')->group(function (): void {
     Route::get('source/{productId}', [StockHubTiktokProductController::class, 'source'])->whereNumber('productId');
     Route::get('runs/{runId}', [StockHubTiktokProductController::class, 'show'])->whereUuid('runId');
     Route::post('runs/{runId}/step', [StockHubTiktokProductController::class, 'step'])->whereUuid('runId');
+});
+
+Route::prefix('marketplace/gita-product-creation')->group(function (): void {
+    Route::get('categories', [StockHubGitaProductController::class, 'categories']);
+    Route::post('runs', [StockHubGitaProductController::class, 'start']);
+    Route::get('source/{productId}', [StockHubGitaProductController::class, 'source'])->whereNumber('productId');
+    Route::get('runs/{runId}', [StockHubGitaProductController::class, 'show'])->whereUuid('runId');
+    Route::post('runs/{runId}/step', [StockHubGitaProductController::class, 'step'])->whereUuid('runId');
 });
 
 Route::prefix('marketplace/stock-mirror/runs')->group(function (): void {
