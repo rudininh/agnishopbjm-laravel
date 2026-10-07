@@ -35,6 +35,7 @@ Route::prefix('marketplace/tiktok-product-creation')->group(function (): void {
 
 Route::prefix('marketplace/gita-product-creation')->group(function (): void {
     Route::get('categories', [StockHubGitaProductController::class, 'categories']);
+    Route::get('shipping-channels', [StockHubGitaProductController::class, 'shippingOptions']);
     Route::post('runs', [StockHubGitaProductController::class, 'start']);
     Route::get('source/{productId}', [StockHubGitaProductController::class, 'source'])->whereNumber('productId');
     Route::get('runs/{runId}', [StockHubGitaProductController::class, 'show'])->whereUuid('runId');

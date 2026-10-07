@@ -114,6 +114,7 @@ export const omnichannelService = {
   gitaProductCreationRun(id) { return api.get(`/marketplace/gita-product-creation/runs/${id}`) },
   stepGitaProductCreation(id) { return api.post(`/marketplace/gita-product-creation/runs/${id}/step`, undefined, { timeout: 90000 }) },
   gitaProductCreationCategories() { return api.get('/marketplace/gita-product-creation/categories', { timeout: 90000 }) },
+  gitaProductCreationShippingChannels() { return api.get('/marketplace/gita-product-creation/shipping-channels', { timeout: 90000 }) },
   startTiktokProductCreation(payload) { return api.post('/marketplace/tiktok-product-creation/runs', payload, { timeout: 90000 }) },
   tiktokProductCreationSource(id) { return api.get(`/marketplace/tiktok-product-creation/source/${id}`) },
   tiktokProductCreationRun(id) { return api.get(`/marketplace/tiktok-product-creation/runs/${id}`) },

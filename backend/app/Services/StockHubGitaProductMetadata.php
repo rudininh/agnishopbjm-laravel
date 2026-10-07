@@ -36,6 +36,22 @@ class StockHubGitaProductMetadata
         return $result;
     }
 
+    private function shippingChannels(): array
+    {
+        $channels = $this->read('logistics/get_channel_list');
+        $this->need(is_array($channels['logistics_channel_list'] ?? null), 'Saluran pengiriman Gita belum lengkap.');
+        $options = []; $available = [];
+        foreach ($channels['logistics_channel_list'] as $ch) {
+            $cid = StockHubGitaProductSource::id($ch['logistics_channel_id'] ?? null);
+            $this->need($cid !== null && !isset($available[$cid]), 'Saluran pengiriman Gita ambigu.');
+            $available[$cid] = $ch;
+            if (($ch['enabled'] ?? false) === true && (!$this->sellerLogistics($ch) || ($ch['seller_logistic_has_configuration'] ?? null) === true)) { $options[] = ['id' => $cid, 'name' => (string) ($ch['logistics_channel_name'] ?? $cid)]; }
+        }
+        return ['available' => $available, 'options' => $options];
+    }
+
+    public function shippingOptions(): array { return $this->shippingChannels()['options']; }
+
     public function validate(array $source, array $input): array
     {
         $p = $source['parent']; $context = $input; $fields = [];
@@ -89,15 +105,7 @@ class StockHubGitaProductMetadata
         foreach (($variations['standardise_variation_list'] ?? $variations['variation_list'] ?? []) as $t) {
             $this->need(empty($t['mandatory']) && empty($t['is_mandatory']), 'Kategori Gita mewajibkan varian standar yang belum terpetakan.');
         }
-        $channels = $this->read('logistics/get_channel_list');
-        $this->need(is_array($channels['logistics_channel_list'] ?? null), 'Saluran pengiriman Gita belum lengkap.');
-        $options = []; $available = [];
-        foreach ($channels['logistics_channel_list'] as $ch) {
-            $cid = StockHubGitaProductSource::id($ch['logistics_channel_id'] ?? null);
-            $this->need($cid !== null && !isset($available[$cid]), 'Saluran pengiriman Gita ambigu.');
-            $available[$cid] = $ch;
-            if (($ch['enabled'] ?? false) === true && (!$this->sellerLogistics($ch) || ($ch['seller_logistic_has_configuration'] ?? null) === true)) { $options[] = ['id' => $cid, 'name' => (string) ($ch['logistics_channel_name'] ?? $cid)]; }
-        }
+        ['available' => $available, 'options' => $options] = $this->shippingChannels();
         $selected = $input['logistic_ids'] ?? array_values(array_intersect(array_map(fn ($l) => (string) $l['logistic_id'], $p['logistic_info']), array_column($options, 'id')));
         $selected = array_values(array_unique($selected)); sort($selected, SORT_STRING); $context['logistic_ids'] = $selected;
         $logistics = []; $bad = $selected === [];

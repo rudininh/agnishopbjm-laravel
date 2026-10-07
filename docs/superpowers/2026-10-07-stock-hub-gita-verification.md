@@ -202,3 +202,41 @@ Final backend verification passed **761 tests / 12,643 assertions**, exit 0
 (03:33.826), after the staged-run guard. PHP syntax checks and
 `git diff --check` passed. Frontend source and deployed assets are unchanged;
 the existing grouped correction form consumes the new recovery descriptor.
+
+## Follow-up: weight rejection and named shipping corrections
+
+The next explicit business rejection identified weight. The submitted weight
+was positive; current channel metadata did not expose a positive minimum
+explaining the rejection. The exact earlier business rule remains unknown.
+Physical measurements and unsupported carrier exclusions are not invented.
+
+Read-only recovery of an explicit weight rejection without a known parent now
+exposes weight, dimensions and shipping corrections. It preserves saved inputs
+and does not write state or call Shopee. A separate target-account read-only
+`GET /api/marketplace/gita-product-creation/shipping-channels` provides current
+named enabled choices using the same channel filter as normal metadata checks.
+The frontend fetches these choices when the saved correction descriptor has
+no options, prevents submission while unavailable/loading, and validates an
+explicit selection before starting a new guarded run. Embedded verified options
+in existing correction fields retain their normal behavior. Weight stays as
+saved unless the operator edits it; the form explains kg/gram conversion.
+
+Backend HTTP-boundary RED: **2 tests / 5 assertions**, two expected failures;
+GREEN: **2 tests / 21 assertions**. Frontend RED: three expected failures;
+GREEN: **3 tests**, including no POST before channel metadata resolves, no POST
+after failed metadata, explicit named courier selection and unchanged weight.
+Independent review found no actionable issues and verified **4 backend tests /
+476 assertions** plus **41 frontend tests**.
+
+Final full verification: **763 backend tests / 12,664 assertions**, exit 0
+(02:37.376); **163 frontend tests**, exit 0; Vite build passed with its existing
+main-chunk size warning. Local recovery GET returned the three correction
+fields with the durable row unchanged. Shipping-choice GET returned HTTP 200.
+A GET-only single-Reguler metadata candidate with saved measurements and weight
+passed with no required fields; this does not establish product acceptance.
+No live product creation, upload, initialization, publication or stock writes
+were performed by verification.
+
+Published local `/assets/index-ofU4So9N.js` and
+`/assets/index-DTUm3WsL.css` return HTTP 200 and match the SHA-256 hashes of
+the successful `frontend/dist` build. Prior assets are retained for open tabs.

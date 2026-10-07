@@ -533,6 +533,35 @@ class StockHubGitaProductTest extends TestCase
         Http::assertNothingSent();
     }
 
+    public function test_saved_weight_rejection_exposes_shipping_corrections_without_remote_reads(): void
+    {
+        $r = $this->start();
+        $state = json_decode(DB::table('stock_hub_gita_product_runs')->where('id', $r['run_id'])->value('state'), true);
+        $state['rejection'] = ['code' => 'product.error_busi', 'field' => 'weight'];
+        $state['context'] = ['weight' => 0.2, 'dimension' => ['package_length' => 100, 'package_width' => 100, 'package_height' => 5], 'logistic_ids' => ['8003']];
+        $encoded = json_encode($state);
+        DB::table('stock_hub_gita_product_runs')->where('id', $r['run_id'])->update(['status' => 'rejected', 'attempted_at' => now(), 'state' => $encoded]);
+        $recovered = $this->getJson($this->base.'/source/10')->assertOk()->json('data');
+        $this->assertTrue($recovered['can_retry']);
+        $this->assertSame(['weight', 'dimension', 'logistic_ids'], array_column($recovered['required_fields'], 'key'));
+        $this->assertSame($state['context'], $recovered['context']);
+        $this->assertSame($encoded, DB::table('stock_hub_gita_product_runs')->where('id', $r['run_id'])->value('state'));
+        Http::assertNothingSent();
+        DB::table('stock_hub_gita_product_runs')->where('id', $r['run_id'])->update(['status' => 'submitted_unverified']);
+        $this->assertFalse($this->getJson($this->base.'/source/10')->assertOk()->json('data.can_retry'));
+        Http::assertNothingSent();
+    }
+
+    public function test_shipping_options_are_read_only_and_target_account_scoped(): void
+    {
+        $this->getJson($this->base.'/shipping-channels')->assertOk()->assertExactJson(['data' => [['id' => '8003', 'name' => 'Regular']]]);
+        $this->assertSame([], $this->writes);
+        $this->assertSame(0, DB::table('stock_hub_gita_product_runs')->count());
+        Http::assertSent(fn ($r) => $r->method() === 'GET' && str_contains($r->url(), '/api/v2/logistics/get_channel_list') && str_contains($r->url(), 'shop_id=22'));
+        $this->mode = 'logistics';
+        $this->getJson($this->base.'/shipping-channels')->assertOk()->assertExactJson(['data' => []]);
+    }
+
     public static function legacyDimensionStages(): array
     {
         return [

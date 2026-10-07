@@ -156,10 +156,53 @@ test('Gita request wrappers use exact paths and extended start/step/category tim
   const sourceText = await readFile(new URL('../src/services/index.js', import.meta.url), 'utf8')
   const calls = [], api = { get: (...args) => { calls.push(['GET', ...args]); return {} }, post: (...args) => { calls.push(['POST', ...args]); return {} } }
   const service = new Function('api', sourceText.replace(/^import api from .*$/m, '').replaceAll('export const ', 'const ') + '\nreturn omnichannelService')(api)
-  service.startGitaProductCreation({ source_product_id: '123', request_key: 'uuid' }); service.gitaProductCreationSource('123'); service.gitaProductCreationRun('run'); service.stepGitaProductCreation('run'); service.gitaProductCreationCategories()
+  assert.equal(typeof service.gitaProductCreationShippingChannels, 'function')
+  service.startGitaProductCreation({ source_product_id: '123', request_key: 'uuid' }); service.gitaProductCreationSource('123'); service.gitaProductCreationRun('run'); service.stepGitaProductCreation('run'); service.gitaProductCreationCategories(); service.gitaProductCreationShippingChannels()
   assert.deepEqual(calls, [['POST', '/marketplace/gita-product-creation/runs', { source_product_id: '123', request_key: 'uuid' }, { timeout: 90000 }],
     ['GET', '/marketplace/gita-product-creation/source/123'], ['GET', '/marketplace/gita-product-creation/runs/run'],
-    ['POST', '/marketplace/gita-product-creation/runs/run/step', undefined, { timeout: 90000 }], ['GET', '/marketplace/gita-product-creation/categories', { timeout: 90000 }]])
+    ['POST', '/marketplace/gita-product-creation/runs/run/step', undefined, { timeout: 90000 }], ['GET', '/marketplace/gita-product-creation/categories', { timeout: 90000 }], ['GET', '/marketplace/gita-product-creation/shipping-channels', { timeout: 90000 }]])
+})
+
+test('weight rejection loads current named shipping choices before allowing explicit corrections', async () => {
+  const saved = { weight: 0.2, dimension: { package_length: 100, package_width: 100, package_height: 5 }, logistic_ids: ['8003', '8005'] }
+  const required_fields = [{ key: 'weight', label: 'Berat paket', type: 'number', unit: 'kg' }, { key: 'dimension', label: 'Dimensi paket', type: 'number', unit: 'cm' }, { key: 'logistic_ids', label: 'Pengiriman Gita', type: 'multiselect', options: [] }]
+  let resolveOptions; const payloads = []
+  const api = { shopeeItems: async () => ({ data: { items: [structuredClone(item)] } }),
+    gitaProductCreationSource: async () => envelope(snapshot('rejected', { can_retry: true, context: saved, required_fields })),
+    gitaProductCreationShippingChannels: async () => new Promise(resolve => { resolveOptions = resolve }),
+    startGitaProductCreation: async payload => { payloads.push(payload); return envelope(snapshot('success', { result: { product_id: '200', published: true, skus: [] } })) } }
+  const view = mount(await loadComponent('../src/pages/ShopeeStock.vue', api), { unified: true, accountKey: 'shopee-agnishopbjm' })
+  try {
+    await tick(); view.button('Buat di Gitashop').props.onClick(); await tick()
+    assert.equal(typeof resolveOptions, 'function'); assert.equal(view.button('Lengkapi dan lanjutkan').props.disabled, true)
+    view.all().find(el => el.type === 'form').props.onSubmit({ preventDefault() {} }); await tick(); assert.equal(payloads.length, 0)
+    resolveOptions(envelope([{ id: '8003', name: 'Reguler (Cashless)' }, { id: '8005', name: 'Hemat Kargo' }])); await tick()
+    assert.ok(view.text(view.root).includes('Reguler (Cashless)')); assert.ok(view.text(view.root).includes('Hemat Kargo'))
+    const dialog = view.all().find(el => el.props.role === 'dialog')
+    const numbers = view.all().filter(el => {
+      if (el.type !== 'input' || el.props.type !== 'number') return false
+      for (let parent = el.parent; parent; parent = parent.parent) if (parent === dialog) return true
+      return false
+    })
+    assert.equal(numbers.length, 4)
+    numbers[1].props['onUpdate:modelValue']('10'); numbers[2].props['onUpdate:modelValue']('10')
+    view.all().find(el => el.type === 'select' && el.props.multiple).props['onUpdate:modelValue'](['8003']); await tick()
+    view.all().find(el => el.type === 'form').props.onSubmit({ preventDefault() {} }); await tick()
+    assert.equal(payloads.length, 1)
+    assert.deepEqual(payloads[0].context, { ...saved, dimension: { package_length: 10, package_width: 10, package_height: 5 }, logistic_ids: ['8003'] })
+  } finally { resolveOptions?.(envelope([])); view.app.unmount() }
+})
+
+test('unavailable shipping choices keep weight correction from posting a new product', async () => {
+  const api = { shopeeItems: async () => ({ data: { items: [structuredClone(item)] } }),
+    gitaProductCreationSource: async () => envelope(snapshot('rejected', { can_retry: true, context: { logistic_ids: ['8003'] }, required_fields: [{ key: 'logistic_ids', type: 'multiselect', label: 'Pengiriman', options: [] }] })),
+    gitaProductCreationShippingChannels: async () => { throw Error('offline') }, startGitaProductCreation: async () => assert.fail('Unsafe product creation') }
+  const view = mount(await loadComponent('../src/pages/ShopeeStock.vue', api), { unified: true, accountKey: 'shopee-agnishopbjm' })
+  try {
+    await tick(); view.button('Buat di Gitashop').props.onClick(); await tick()
+    assert.ok(view.button('Muat pengiriman')); assert.equal(view.button('Lengkapi dan lanjutkan').props.disabled, true)
+    view.all().find(el => el.type === 'form').props.onSubmit({ preventDefault() {} }); await tick()
+  } finally { view.app.unmount() }
 })
 
 

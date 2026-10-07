@@ -14,8 +14,8 @@
           <ul v-if="state.run.result.skus?.length"><li v-for="sku in state.run.result.skus" :key="sku.id">{{ sku.seller_sku }} · ID model {{ sku.id }}</li></ul>
         </template>
         <form v-if="state.run.can_retry && !state.pendingKey" @submit.prevent="retry">
-          <div class="creation-fields" v-if="state.run.required_fields?.length">
-            <fieldset v-for="field in state.run.required_fields" :key="field.key">
+          <div class="creation-fields" v-if="correctionFields.length">
+            <fieldset v-for="field in correctionFields" :key="field.key">
               <legend>{{ field.label }}{{ field.unit ? ` (${field.unit})` : '' }}</legend>
               <template v-if="field.type === 'category'">
                 <input v-model="categorySearch" type="search" placeholder="Cari nama kategori" :disabled="state.busy" aria-label="Cari kategori Gitashop">
@@ -30,14 +30,17 @@
                   <input v-model="values[`dimension.${dimension.key}`]" type="number" min="1" step="1" :disabled="state.busy" required>
                 </label>
               </div>
-              <select v-else-if="field.type === 'multiselect' || field.type === 'select'" v-model="values[field.key]" :aria-label="field.label" :multiple="field.type === 'multiselect'" :disabled="state.busy" required>
+              <select v-else-if="field.type === 'multiselect' || field.type === 'select'" v-model="values[field.key]" :aria-label="field.label" :multiple="field.type === 'multiselect'" :disabled="state.busy || (field.key === 'logistic_ids' && shippingBlocked)" required>
                 <option v-if="field.type === 'select'" value="">Pilih lokasi</option>
                 <option v-for="option in field.options || []" :key="option.id" :value="String(option.id)">{{ option.name }}</option>
               </select>
               <input v-else v-model="values[field.key]" :aria-label="field.label" :type="field.type === 'number' ? 'number' : field.type === 'url' ? 'url' : 'text'" :min="field.type === 'number' ? '0.000001' : undefined" :step="field.type === 'number' ? 'any' : undefined" :disabled="state.busy" required>
+              <small v-if="field.key === 'weight'">Isi berat paket beserta kemasan dalam kg. 200 gram = 0,2 kg.</small>
+              <small v-if="field.key === 'logistic_ids' && shippingLoading">Memuat saluran pengiriman...</small>
+              <small v-if="field.key === 'logistic_ids' && shippingError" role="alert">{{ shippingError }} <button type="button" :disabled="shippingLoading || state.busy" @click="loadShippingChannels">Muat pengiriman</button></small>
             </fieldset>
           </div>
-          <button type="submit" :disabled="state.busy || disabled || categoriesLoading">{{ state.run.required_fields?.length ? 'Lengkapi dan lanjutkan' : 'Coba Lagi' }}</button>
+          <button type="submit" :disabled="state.busy || disabled || categoriesLoading || shippingBlocked">{{ state.run.required_fields?.length ? 'Lengkapi dan lanjutkan' : 'Coba Lagi' }}</button>
         </form>
       </template>
       <p v-else-if="state.pendingKey">Respons permintaan belum diterima. Periksa status atau ulangi permintaan yang sama.</p>
@@ -63,6 +66,10 @@ const emit = defineEmits(['busy', 'run', 'remembered'])
 const state = ref({ busy: false, run: null, pendingKey: '', error: '', sourceId: '', paused: false })
 const open = ref(false), dialog = ref(null), productName = ref(''), formError = ref(''), values = ref({})
 const categoryNodes = ref([]), categorySearch = ref(''), categoriesLoading = ref(false), categoryError = ref('')
+const shippingOptions = ref([]), shippingLoading = ref(false), shippingError = ref('')
+const shippingNeeded = computed(() => state.value.run?.required_fields?.some(field => field.key === 'logistic_ids' && !field.options?.length))
+const shippingBlocked = computed(() => Boolean(shippingNeeded.value && (shippingLoading.value || !shippingOptions.value.length)))
+const correctionFields = computed(() => (state.value.run?.required_fields || []).map(field => field.key === 'logistic_ids' && !field.options?.length ? { ...field, options: shippingOptions.value } : field))
 let alive = true, previousFocus = null
 let storage
 try { storage = globalThis.localStorage } catch {}
@@ -79,7 +86,19 @@ watch(() => state.value.run, run => {
   values.value = creationFieldValues(run?.context)
   formError.value = ''
   if (open.value && run?.required_fields?.some(field => field.type === 'category') && !categoryNodes.value.length) loadCategories()
+  if (open.value && shippingNeeded.value && !shippingOptions.value.length) loadShippingChannels()
 })
+async function loadShippingChannels() {
+  if (shippingLoading.value) return
+  shippingLoading.value = true; shippingError.value = ''; shippingOptions.value = []
+  try {
+    const response = await omnichannelService.gitaProductCreationShippingChannels()
+    const options = response?.data?.data
+    if (!Array.isArray(options) || !options.length || options.some(option => !/^\d+$/.test(option?.id) || typeof option.name !== 'string' || !option.name.trim()) || new Set(options.map(option => option.id)).size !== options.length) throw Error('Invalid shipping choices')
+    if (alive) shippingOptions.value = options
+  } catch { if (alive) shippingError.value = 'Saluran pengiriman belum tersedia. Muat kembali sebelum melanjutkan.' }
+  finally { if (alive) shippingLoading.value = false }
+}
 async function loadCategories() {
   if (categoriesLoading.value) return
   categoriesLoading.value = true; categoryError.value = ''
@@ -92,15 +111,15 @@ async function loadCategories() {
 async function request(item, inspect = false) {
   if (props.disabled || state.value.busy) return
   previousFocus = globalThis.document?.activeElement
-  productName.value = item.nama || ''; categorySearch.value = ''; formError.value = ''; open.value = true
+  productName.value = item.nama || ''; categorySearch.value = ''; formError.value = ''; shippingOptions.value = []; shippingError.value = ''; open.value = true
   nextTick(() => dialog.value?.focus())
   return inspect ? controller.recover(String(item.item_id)) : controller.start(String(item.item_id))
 }
 function retry() {
-  if (props.disabled || state.value.busy) return
+  if (props.disabled || state.value.busy || shippingBlocked.value) return
   try {
     const run = state.value.run
-    const context = creationContext(run.context, run.required_fields || [], values.value)
+    const context = creationContext(run.context, correctionFields.value, values.value)
     if (context.category_id && run.required_fields?.some(field => field.key === 'category_id') && !creationLeafCategories(categoryNodes.value).some(category => category.id === context.category_id)) {
       throw Error('Pilih kategori akhir yang sesuai dengan produk.')
     }

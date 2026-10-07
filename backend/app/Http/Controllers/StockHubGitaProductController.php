@@ -33,6 +33,7 @@ class StockHubGitaProductController extends Controller
     public function show(string $runId) { return $this->respond(fn () => $this->service->show($runId)); }
     public function step(string $runId) { return $this->respond(fn () => $this->service->step($runId)); }
     public function categories() { return $this->respond(fn () => $this->service->categories()); }
+    public function shippingOptions() { return $this->respond(fn () => $this->service->shippingOptions()); }
     private function respond(callable $action)
     {
         try { return response()->json(['data' => $action()]); }

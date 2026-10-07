@@ -39,6 +39,7 @@ class StockHubGitaProductService
     public function show(string $id): array { return $this->snapshot($this->row($id)); }
     public function source(string $id): ?array { $g = DB::table(self::GUARDS)->where('source_product_id', $id)->first(); return $g?->run_id ? $this->show($g->run_id) : null; }
     public function categories(): array { return $this->gateway->categories(); }
+    public function shippingOptions(): array { return $this->gateway->shippingOptions(); }
 
     public function step(string $id): array
     {
@@ -191,6 +192,11 @@ class StockHubGitaProductService
         $fields = $s['required_fields'] ?? [];
         if ($status === 'rejected' && !$row->remote_product_id && ($s['rejection']['field'] ?? null) === 'dimension' && !in_array('dimension', array_column($fields, 'key'), true)) {
             $fields[] = $this->gateway->correctionField('dimension');
+        }
+        if ($status === 'rejected' && !$row->remote_product_id && ($s['rejection']['field'] ?? null) === 'weight') {
+            foreach (['weight', 'dimension', 'logistic_ids'] as $key) {
+                if (!in_array($key, array_column($fields, 'key'), true)) { $fields[] = $this->gateway->correctionField($key, $key === 'logistic_ids' ? [] : null); }
+            }
         }
         return ['run_id' => $row->id, 'source_product_id' => $row->source_product_id, 'status' => $status, 'stage' => $status, 'message' => $s['message'] ?? '', 'can_continue' => in_array($status, self::RUNNING, true), 'can_retry' => !$row->remote_product_id && in_array($status, ['blocked','rejected'], true), 'remote_product_id' => $row->remote_product_id, 'variant_count' => count($s['source']['variants'] ?? []), 'progress' => $s['progress'], 'required_fields' => $fields, 'context' => $s['context'], 'result' => $s['result'] ?? null, 'next_step_after_ms' => $status === 'initializing_variants' && !$row->variants_attempted_at ? $this->delay($s) : 0];
     }
