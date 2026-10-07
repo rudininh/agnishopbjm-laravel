@@ -129,9 +129,9 @@ assert.equal(creationRowResult({status:'partial_unverified',result:{product_id:'
 
 ## Final integration and verification
 
-- [ ] Independent final whole-feature review from f699c73 to final source head; one coordinated fix wave if needed.
+- [x] Independent final whole-feature review from f699c73 to final source head; one coordinated fix wave if needed.
 - [x] Final stable full backend suite and frontend tests/build (reuse Task2 full run if no frontend edits since).
 - [x] Apply new local migration via php artisan migrate --force (additive authorized feature deployment); inspect migration status and API route/snapshot safe invalid-ID tests.
-- [ ] Publish frontend/dist index.html and hashed assets to backend/public using Copy-Item -Path wildcard; verify served route/assets and browser (read-only/intercepted, never actual create).
+- [x] Publish frontend/dist index.html and hashed assets to backend/public using Copy-Item -Path wildcard; verify served route/assets and browser (read-only/intercepted, never actual create).
 - [x] Read-only live Gita source/metadata/payload preflight on representative source confirms actual contracts and no source/Stock Master/run writes. Correct any contract incompatibility with test-first fix and scoped review.
-- [ ] Record verified durable architecture/deployment facts in project memory, commit verification docs/published assets; keep local feature branch with no push/merge unless newly instructed. Retain ignored workflow evidence; never retry prior rejected recursive cleanup.
+- [x] Record verified durable architecture/deployment facts in project memory, commit verification docs/published assets; keep local feature branch with no push/merge unless newly instructed. Retain ignored workflow evidence; never retry prior rejected recursive cleanup.
