@@ -72,3 +72,23 @@ blocked. Focused suite: **3 tests / 138 assertions**; full backend:
 **734 tests / 10,975 assertions**, exit 0. Independent scoped review found no issues.
 The actual source normalizer also succeeded for all 21 variants in a GET-only
 probe; no product creation was performed.
+
+The same read-only preflight exposed an unnecessary brand pagination dependency:
+positive brands were found by exact ID and original name but validation continued
+through the remaining catalog. Validation now stops at that proven normal-status
+entry. Unknown/mismatched brands still block; no source brand is replaced with
+No Brand, and cursor checks remain active until a match is found.
+
+Two HTTP-boundary regressions cover a verified brand followed by an unavailable
+later page and reject mismatched ID/name pairs. They reproduced the failure before
+the fix, then passed (**2 tests / 123 assertions**); the scoped review found no
+issues. The actual GET-only source/metadata/placeholder-payload preflight then
+passed for all 21 variants, three gallery images and 25 planned image transfers,
+with no correction fields and unchanged SKU/current price/available stock/tier
+values. No images or products were uploaded by this verification.
+
+Final backend verification after both follow-ups passed: **736 tests / 11,098
+assertions**, exit 0 (02:57.316). An earlier full run encountered one unrelated
+temporary-artifact cleanup failure in the unchanged XLSX export test; that test
+passed separately and the repeated complete suite passed. Export code was not
+changed. Frontend production source and deployed assets are unchanged.

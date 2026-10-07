@@ -89,6 +89,11 @@ class StockHubGitaProductTest extends TestCase
             } elseif ($path === '/api/v2/product/get_variation_tree') { return Http::response(['error' => '', 'data' => ['standardise_variation_list' => []]]);
             } elseif ($path === '/api/v2/product/get_brand_list') {
                 $data = ['brand_list' => $this->mode === 'no_brand' ? [['brand_id' => 0, 'original_brand_name' => 'NoBrand']] : [], 'has_next_page' => false, 'is_mandatory' => in_array($this->mode, ['brand','no_brand'], true)];
+                if ($this->mode === 'positive_brand_found') {
+                    if ((int) $q['offset'] >= 200) { return Http::response(['error' => 'unavailable'], 503); }
+                    $data = ['brand_list' => (int) $q['offset'] === 0 ? [['brand_id' => 0, 'original_brand_name' => 'No Brand']] : [['brand_id' => 7, 'original_brand_name' => 'Known Brand']], 'is_mandatory' => true, 'has_next_page' => true, 'next_offset' => (int) $q['offset'] + 100];
+                }
+                if ($this->mode === 'positive_brand_mismatch') { $data['brand_list'] = [['brand_id' => 7, 'original_brand_name' => 'Other Brand'], ['brand_id' => 8, 'original_brand_name' => 'Known Brand']]; }
             } elseif ($path === '/api/v2/logistics/get_channel_list') {
                 $data = ['logistics_channel_list' => [['logistics_channel_id' => 8003, 'logistics_channel_name' => 'Regular', 'enabled' => $this->mode !== 'logistics', 'fee_type' => 'FIXED_DEFAULT', 'seller_logistic_has_configuration' => true]]];
                 if ($this->mode === 'canonical') { $data['logistics_channel_list'][] = ['logistics_channel_id' => 8005, 'logistics_channel_name' => 'Express', 'enabled' => true, 'fee_type' => 'SIZE_INPUT']; }
@@ -292,6 +297,31 @@ class StockHubGitaProductTest extends TestCase
     public static function unsupportedShopeeFulfillment(): array
     {
         return ['parent' => [true], 'variant' => [false]];
+    }
+
+    public function test_verified_positive_brand_does_not_depend_on_remaining_brand_pages(): void
+    {
+        $this->mode = 'positive_brand_found';
+        $this->sourceExtras = ['brand' => ['brand_id' => 7, 'original_brand_name' => 'Known Brand']];
+        $r = $this->finish($this->start());
+        $this->assertSame('success', $r['status'], json_encode($r));
+        $this->assertTrue($r['result']['published']);
+        $this->assertSame(['brand_id' => 7, 'original_brand_name' => 'Known Brand'], $this->writes[0][1]['brand']);
+        Http::assertNotSent(function ($request) {
+            parse_str(parse_url($request->url(), PHP_URL_QUERY) ?? '', $query);
+            return parse_url($request->url(), PHP_URL_PATH) === '/api/v2/product/get_brand_list' && (int) ($query['offset'] ?? 0) >= 200;
+        });
+    }
+
+    public function test_positive_brand_requires_both_the_source_id_and_name(): void
+    {
+        $this->mode = 'positive_brand_mismatch';
+        $this->sourceExtras = ['brand' => ['brand_id' => 7, 'original_brand_name' => 'Known Brand']];
+        $r = $this->finish($this->start());
+        $this->assertSame('blocked', $r['status']);
+        $this->assertTrue($r['can_retry']);
+        $this->assertSame([], $this->writes);
+        $this->assertSame([], $this->downloadRequests);
     }
 
     #[\PHPUnit\Framework\Attributes\DataProvider('unsupportedShopeeFulfillment')]

@@ -200,7 +200,7 @@ class StockHubGitaProductMetadata
             $this->need(is_array($data['brand_list'] ?? null) && is_bool($data['has_next_page'] ?? null) && is_bool($data['is_mandatory'] ?? null), 'Daftar merek Gita belum lengkap.');
             if ($brand['brand_id'] === '0' && !$data['is_mandatory']) { return; }
             foreach ($data['brand_list'] as $b) { if ((string) ($b['brand_id'] ?? '') === $brand['brand_id'] && ($brand['brand_id'] === '0' || ($b['original_brand_name'] ?? null) === $brand['original_brand_name'])) { $found = true; } }
-            if ($brand['brand_id'] === '0' && $found) { return; }
+            if ($found) { return; }
             if (!$data['has_next_page']) { $this->need($found, 'Merek sumber tidak tersedia pada akun Gita.'); return; }
             $next = $data['next_offset'] ?? null;
             $this->need(is_int($next) && $next > $offset && !in_array($next, $seen, true) && $data['brand_list'] !== [], 'Paginasi merek Gita tidak lengkap.');
