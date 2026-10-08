@@ -41,6 +41,8 @@
                   <button type="button" :disabled="state.busy || disabled" @click="removeUnavailableShipping">Hapus layanan yang tidak tersedia</button>
                 </template>
                 <button v-if="regularShipping" type="button" :disabled="state.busy || disabled || shippingBlocked" @click="selectRegularShipping">Pilih Reguler saja</button>
+                <button v-if="agniShipping?.length" type="button" :disabled="state.busy || disabled || shippingBlocked || unavailableAgniShipping.length > 0" @click="selectAgniShipping">Samakan dengan Agni</button>
+                <small v-if="agniShipping?.length && !shippingBlocked && unavailableAgniShipping.length" role="alert">{{ unavailableAgniShipping.length }} layanan Agni belum tersedia di Gitashop. Periksa pengaturan pengiriman Gitashop untuk menyamakan pilihan.</small>
                 <small>Centang layanan yang akan digunakan. Pilihan ini baru dikirim setelah menekan Lengkapi dan lanjutkan.</small>
               </div>
               <select v-else-if="field.type === 'multiselect' || field.type === 'select'" v-model="values[field.key]" :aria-label="field.label" :multiple="field.type === 'multiselect'" :disabled="state.busy || (field.key === 'logistic_ids' && shippingBlocked)" required>
@@ -88,6 +90,11 @@ const selectedShipping = computed(() => Array.isArray(values.value.logistic_ids)
 const availableShipping = computed(() => (correctionFields.value.find(field => field.key === 'logistic_ids')?.options || []).map(option => String(option.id)))
 const unavailableShipping = computed(() => selectedShipping.value.filter(id => !availableShipping.value.includes(id)))
 const regularShipping = computed(() => correctionFields.value.find(field => field.key === 'logistic_ids')?.options?.find(option => String(option.id) === '8003' && /^Reguler(?:\s|\(|$)/i.test(option.name)))
+const agniShipping = computed(() => {
+  const ids = state.value.run?.source_logistic_ids
+  return Array.isArray(ids) && ids.every(id => typeof id === 'string' && /^\d+$/.test(id)) && new Set(ids).size === ids.length ? ids : null
+})
+const unavailableAgniShipping = computed(() => (agniShipping.value || []).filter(id => !availableShipping.value.includes(id)))
 let alive = true, previousFocus = null
 let storage
 try { storage = globalThis.localStorage } catch {}
@@ -133,6 +140,10 @@ function toggleShipping(id, checked) {
 function selectRegularShipping() {
   if (props.disabled || state.value.busy || shippingBlocked.value || !regularShipping.value) return
   values.value.logistic_ids = [String(regularShipping.value.id)]
+}
+function selectAgniShipping() {
+  if (props.disabled || state.value.busy || shippingBlocked.value || !agniShipping.value?.length || unavailableAgniShipping.value.length) return
+  values.value.logistic_ids = [...agniShipping.value]
 }
 function removeUnavailableShipping() {
   if (props.disabled || state.value.busy || shippingBlocked.value) return

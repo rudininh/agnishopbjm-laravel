@@ -272,3 +272,37 @@ Earlier published assets are retained for open tabs. The in-app browser check
 could not run because its tool connection failed before setup; component
 behavior and HTTP publication were verified instead. No live creation,
 upload, model initialization, publication or inventory write was performed.
+
+## Follow-up: restore source Agni shipping selection
+
+The operator requests the source Agni product's shipping services. Existing
+initial metadata already defaults to enabled source channels available in Gita;
+an explicit saved correction overrides that default. Recovery now adds nullable
+`source_logistic_ids` derived only from normalized enabled logistics in its
+saved source snapshot. It exposes no source payload, makes no HTTP calls and
+does not change the run row. Retry keeps its existing fresh-source preparation,
+metadata validation and source-drift/no-replay guards.
+
+The form offers `Samakan dengan Agni` for a known nonempty source selection.
+The action changes only local shipping IDs and preserves other context; it
+never submits automatically. If any source channel is unavailable in current
+Gita choices, the shortcut is disabled and explains the mismatch. Missing
+source data never falls back to selecting all channels.
+
+Backend RED: two expected missing-field failures; GREEN affected snapshot,
+default selection and read-only shipping tests: **4 tests / 57 assertions**.
+Frontend RED: two expected missing-action failures; GREEN: **16 renderer
+tests**; full frontend **167 tests**, exit 0. Independent review found no
+actionable issues and passed **5 backend tests / 501 assertions** plus
+**45 frontend tests**. PHP lint and diff checks passed. Vite build passed with
+the existing main-chunk size warning.
+
+Local saved recovery GET returned HTTP200, enabled source IDs separately from
+the larger saved correction selection, and an unchanged durable run row.
+Published route plus `/assets/index-JUZ-l6VV.js` and
+`/assets/index-DPPV1Zmm.css` returned HTTP200; served SHA-256 hashes match
+the final dist build. Earlier assets remain available. Verification performed
+no live uploads, creates, model initialization, publication or stock writes.
+
+Final full backend verification passed **765 tests / 12,700 assertions**,
+exit 0 (02:46.771), with the source-selection snapshot change included.

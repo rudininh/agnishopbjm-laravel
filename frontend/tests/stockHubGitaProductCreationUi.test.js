@@ -245,6 +245,38 @@ test('saved unavailable shipping choices can be explicitly removed without requi
   } finally { view.app.unmount() }
 })
 
+for (const { name, sourceIds, disabled } of [
+  { name: 'matching Agni channels', sourceIds: ['8003', '8007'], disabled: false },
+  { name: 'Agni channel unavailable in Gita', sourceIds: ['8003', '9000'], disabled: true },
+  { name: 'unknown Agni channels', sourceIds: null, disabled: true },
+]) {
+  test(`shipping reset handles ${name} without automatic changes or submission`, async () => {
+    const saved = { weight: 0.2, dimension: { package_length: 10, package_width: 10, package_height: 5 }, logistic_ids: ['8003', '8005', '8007'] }, payloads = []
+    const required_fields = [{ key: 'logistic_ids', type: 'multiselect', label: 'Pengiriman', options: [{ id: '8003', name: 'Reguler (Cashless)' }, { id: '8005', name: 'Hemat Kargo' }, { id: '8007', name: 'Instant' }] }]
+    const api = { shopeeItems: async () => ({ data: { items: [structuredClone(item)] } }),
+      gitaProductCreationSource: async () => envelope(snapshot('blocked', { context: saved, required_fields, source_logistic_ids: sourceIds })),
+      startGitaProductCreation: async payload => { payloads.push(payload); return envelope(snapshot('success', { result: { product_id: '200', published: true, skus: [] } })) } }
+    const view = mount(await loadComponent('../src/pages/ShopeeStock.vue', api), { unified: true, accountKey: 'shopee-agnishopbjm' })
+    try {
+      await tick(); view.button('Buat di Gitashop').props.onClick(); await tick()
+      assert.ok(view.text(view.root).includes('3 layanan dipilih')); assert.equal(payloads.length, 0)
+      const reset = view.button('Samakan dengan Agni')
+      if (sourceIds === null) { assert.equal(reset, undefined); return }
+      assert.ok(reset); assert.equal(reset.props.disabled, disabled)
+      reset.props.onClick(); await tick()
+      assert.equal(payloads.length, 0)
+      if (disabled) {
+        assert.ok(view.text(view.root).includes('3 layanan dipilih'))
+        assert.ok(view.all().some(el => el.props.role === 'alert'))
+        return
+      }
+      assert.ok(view.text(view.root).includes('2 layanan dipilih'))
+      view.all().find(el => el.type === 'form').props.onSubmit({ preventDefault() {} }); await tick()
+      assert.deepEqual(payloads[0].context, { ...saved, logistic_ids: ['8003', '8007'] })
+    } finally { view.app.unmount() }
+  })
+}
+
 
 test('cross-target clicks in the same tick cannot start concurrent creation requests', async () => {
   let finish; const calls = []

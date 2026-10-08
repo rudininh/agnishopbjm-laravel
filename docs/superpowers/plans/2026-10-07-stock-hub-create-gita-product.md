@@ -155,3 +155,20 @@ values.value.logistic_ids = [String(regularShipping.value.id)]
 
 - [x] Run `node --test tests/stockHubGitaProductCreationUi.test.js`, `npm test`, `npm run build` from frontend; request scoped read-only review. Publish dist assets with prior assets retained; verify HTTP200 and matching hashes. No live create calls.
 - [x] Record evidence and durable UI behavior, commit locally, and give the operator exact retry steps without claiming Shopee acceptance.
+
+## Follow-up: restore Agni shipping choices (2026-10-08)
+
+The operator requests the same shipping choices as the Agni source product.
+Initial metadata already defaults to enabled source channels available in Gita;
+explicit corrections can override that choice. Expose only normalized enabled
+source channel IDs from the saved source snapshot, without marketplace calls
+or state writes, and add an explicit `Samakan dengan Agni` local form action.
+If any source channel is unavailable in current Gita choices, disable the
+action and explain the mismatch; do not silently claim an exact copy.
+Saved context, package measurements, source validation and no-replay guards
+remain intact. Retry continues to validate against fresh marketplace metadata.
+
+- [x] Test-first backend snapshot proof: expose enabled Agni IDs separately from correction context, omit unavailable source metadata, no remote calls/state writes.
+- [x] Test-first renderer proof: preserve saved selection until click, restore exact Agni set without POST or measurement changes, refuse missing target channels and unavailable source metadata.
+- [x] Implement snapshot `source_logistic_ids` (nullable string ID array) and form reset button with existing busy/loading/disabled guards.
+- [x] Run affected/backend full and frontend full/build, independent review, publish and verify HTTP asset hashes, record durable facts and commit locally.

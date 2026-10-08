@@ -562,6 +562,45 @@ class StockHubGitaProductTest extends TestCase
         $this->getJson($this->base.'/shipping-channels')->assertOk()->assertExactJson(['data' => []]);
     }
 
+    public function test_saved_source_shipping_is_separate_from_corrections_and_recovery_is_read_only(): void
+    {
+        $r = $this->start(['logistic_ids' => ['8005']]);
+        $this->assertArrayHasKey('source_logistic_ids', $r);
+        $this->assertNull($r['source_logistic_ids']);
+        $state = json_decode(DB::table('stock_hub_gita_product_runs')->where('id', $r['run_id'])->value('state'), true);
+        $state['source']['parent']['logistic_info'] = [
+            ['logistic_id' => 8007, 'enabled' => true, 'is_free' => false],
+            ['logistic_id' => 8005, 'enabled' => false, 'is_free' => false],
+            ['logistic_id' => 8003, 'enabled' => true, 'is_free' => false],
+        ];
+        $encoded = json_encode($state);
+        DB::table('stock_hub_gita_product_runs')->where('id', $r['run_id'])->update(['status' => 'blocked', 'state' => $encoded]);
+        $recovered = $this->getJson($this->base.'/source/10')->assertOk()->json('data');
+        $this->assertSame(['8003', '8007'], $recovered['source_logistic_ids']);
+        $this->assertSame(['8005'], $recovered['context']['logistic_ids']);
+        $this->assertArrayNotHasKey('source', $recovered);
+        $this->assertSame($encoded, DB::table('stock_hub_gita_product_runs')->where('id', $r['run_id'])->value('state'));
+        Http::assertNothingSent();
+    }
+
+    public function test_default_shipping_uses_enabled_agni_product_channels_only(): void
+    {
+        $this->mode = 'canonical';
+        $this->sourceExtras = ['logistic_info' => [
+            ['logistic_id' => 8003, 'enabled' => true, 'is_free' => false],
+            ['logistic_id' => 8005, 'enabled' => false, 'is_free' => false],
+        ]];
+        $r = $this->start();
+        $this->postJson($this->base.'/runs/'.$r['run_id'].'/step')->assertOk();
+        $prepared = $this->postJson($this->base.'/runs/'.$r['run_id'].'/step')->assertOk()->json('data');
+        $this->assertSame('scanning', $prepared['status']);
+        $this->assertSame(['8003'], $prepared['context']['logistic_ids']);
+        $this->assertArrayHasKey('source_logistic_ids', $prepared);
+        $this->assertSame(['8003'], $prepared['source_logistic_ids']);
+        $this->assertSame([], $this->writes);
+        $this->assertSame([], $this->downloadRequests);
+    }
+
     public static function legacyDimensionStages(): array
     {
         return [

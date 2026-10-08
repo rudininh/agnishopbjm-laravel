@@ -198,6 +198,8 @@ class StockHubGitaProductService
                 if (!in_array($key, array_column($fields, 'key'), true)) { $fields[] = $this->gateway->correctionField($key, $key === 'logistic_ids' ? [] : null); }
             }
         }
-        return ['run_id' => $row->id, 'source_product_id' => $row->source_product_id, 'status' => $status, 'stage' => $status, 'message' => $s['message'] ?? '', 'can_continue' => in_array($status, self::RUNNING, true), 'can_retry' => !$row->remote_product_id && in_array($status, ['blocked','rejected'], true), 'remote_product_id' => $row->remote_product_id, 'variant_count' => count($s['source']['variants'] ?? []), 'progress' => $s['progress'], 'required_fields' => $fields, 'context' => $s['context'], 'result' => $s['result'] ?? null, 'next_step_after_ms' => $status === 'initializing_variants' && !$row->variants_attempted_at ? $this->delay($s) : 0];
+        $sourceLogistics = $s['source']['parent']['logistic_info'] ?? null;
+        $sourceLogisticIds = is_array($sourceLogistics) ? array_map(fn ($channel) => (string) $channel['logistic_id'], StockHubGitaProductSource::logistics($sourceLogistics)) : null;
+        return ['run_id' => $row->id, 'source_product_id' => $row->source_product_id, 'status' => $status, 'stage' => $status, 'message' => $s['message'] ?? '', 'can_continue' => in_array($status, self::RUNNING, true), 'can_retry' => !$row->remote_product_id && in_array($status, ['blocked','rejected'], true), 'remote_product_id' => $row->remote_product_id, 'variant_count' => count($s['source']['variants'] ?? []), 'source_logistic_ids' => $sourceLogisticIds, 'progress' => $s['progress'], 'required_fields' => $fields, 'context' => $s['context'], 'result' => $s['result'] ?? null, 'next_step_after_ms' => $status === 'initializing_variants' && !$row->variants_attempted_at ? $this->delay($s) : 0];
     }
 }
