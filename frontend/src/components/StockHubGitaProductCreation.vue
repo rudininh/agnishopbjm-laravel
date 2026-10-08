@@ -14,8 +14,16 @@
           <ul v-if="state.run.result.skus?.length"><li v-for="sku in state.run.result.skus" :key="sku.id">{{ sku.seller_sku }} · ID model {{ sku.id }}</li></ul>
         </template>
         <form v-if="state.run.can_retry && !state.pendingKey" @submit.prevent="retry">
+          <template v-if="correctionFields.some(field => ['weight', 'dimension', 'logistic_ids'].includes(field.key))">
+            <label class="shipping-choice source-package-choice">
+              <input type="checkbox" aria-label="Ambil data paket dari Agni" :checked="useAgniPackage" :disabled="state.busy || disabled" @change="useAgniPackage = $event.target.checked">
+              <span>Ambil data paket dari Agni</span>
+            </label>
+            <small v-if="useAgniPackage">Berat, ukuran, dan pengiriman dibaca ulang dari Agni saat dilanjutkan. Ukuran yang kosong tidak dikirim jika kategori Gitashop mengizinkannya.</small>
+            <small v-if="useAgniPackage && state.run.status === 'blocked' && state.run.context?.use_agni_shipping === true" role="alert">Data Agni perlu diperiksa: {{ correctionFields.filter(field => ['weight', 'dimension', 'logistic_ids'].includes(field.key)).map(field => field.label).join(', ') }}. Lengkapi di Agni atau matikan pilihan ini untuk mengisi manual.</small>
+          </template>
           <div class="creation-fields" v-if="correctionFields.length">
-            <fieldset v-for="field in correctionFields" :key="field.key">
+            <fieldset v-for="field in visibleCorrectionFields" :key="field.key">
               <legend>{{ field.label }}{{ field.unit ? ` (${field.unit})` : '' }}</legend>
               <template v-if="field.type === 'category'">
                 <input v-model="categorySearch" type="search" placeholder="Cari nama kategori" :disabled="state.busy" aria-label="Cari kategori Gitashop">
@@ -83,9 +91,11 @@ const state = ref({ busy: false, run: null, pendingKey: '', error: '', sourceId:
 const open = ref(false), dialog = ref(null), productName = ref(''), formError = ref(''), values = ref({})
 const categoryNodes = ref([]), categorySearch = ref(''), categoriesLoading = ref(false), categoryError = ref('')
 const shippingOptions = ref([]), shippingLoading = ref(false), shippingError = ref('')
-const shippingNeeded = computed(() => state.value.run?.required_fields?.some(field => field.key === 'logistic_ids' && !field.options?.length))
+const useAgniPackage = ref(false)
+const shippingNeeded = computed(() => !useAgniPackage.value && state.value.run?.required_fields?.some(field => field.key === 'logistic_ids' && !field.options?.length))
 const shippingBlocked = computed(() => Boolean(shippingNeeded.value && (shippingLoading.value || !shippingOptions.value.length)))
 const correctionFields = computed(() => (state.value.run?.required_fields || []).map(field => field.key === 'logistic_ids' && !field.options?.length ? { ...field, options: shippingOptions.value } : field))
+const visibleCorrectionFields = computed(() => correctionFields.value.filter(field => !useAgniPackage.value || !['weight', 'dimension', 'logistic_ids'].includes(field.key)))
 const selectedShipping = computed(() => Array.isArray(values.value.logistic_ids) ? values.value.logistic_ids.map(String) : [])
 const availableShipping = computed(() => (correctionFields.value.find(field => field.key === 'logistic_ids')?.options || []).map(option => String(option.id)))
 const unavailableShipping = computed(() => selectedShipping.value.filter(id => !availableShipping.value.includes(id)))
@@ -109,9 +119,13 @@ const categories = computed(() => {
 })
 watch(() => state.value.run, run => {
   values.value = creationFieldValues(run?.context)
+  useAgniPackage.value = run?.context?.use_agni_shipping === true
   formError.value = ''
   if (open.value && run?.required_fields?.some(field => field.type === 'category') && !categoryNodes.value.length) loadCategories()
   if (open.value && shippingNeeded.value && !shippingOptions.value.length) loadShippingChannels()
+})
+watch([shippingNeeded, open], ([needed, opened]) => {
+  if (needed && opened && !shippingOptions.value.length) loadShippingChannels()
 })
 async function loadShippingChannels() {
   if (shippingLoading.value) return
@@ -160,7 +174,7 @@ function retry() {
   if (props.disabled || state.value.busy || shippingBlocked.value) return
   try {
     const run = state.value.run
-    const context = creationContext(run.context, correctionFields.value, values.value)
+    const context = creationContext(run.context, correctionFields.value, values.value, useAgniPackage.value)
     if (context.category_id && run.required_fields?.some(field => field.key === 'category_id') && !creationLeafCategories(categoryNodes.value).some(category => category.id === context.category_id)) {
       throw Error('Pilih kategori akhir yang sesuai dengan produk.')
     }
@@ -185,5 +199,6 @@ button { padding: 9px 12px; border: 1px solid #94a3b8; border-radius: 6px; backg
 .shipping-fields { display: grid; gap: 8px; } .shipping-count { margin: 0; font-weight: 600; }
 .shipping-choice { display: flex; align-items: center; gap: 8px; padding: 8px; border: 1px solid #cbd5e1; border-radius: 5px; }
 .shipping-choice input { width: 18px; height: 18px; margin: 0; flex-shrink: 0; } .shipping-fields button { justify-self: start; }
+.source-package-choice { margin: 14px 0 6px; background: #f0f9ff; }
 .creation-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 18px; } ul { padding-left: 18px; }
 </style>

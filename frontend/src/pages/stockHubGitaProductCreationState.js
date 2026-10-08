@@ -22,10 +22,13 @@ export function creationFieldValues(context = {}) {
     ...Object.fromEntries(dimensionKeys.map(key => [`dimension.${key}`, positive(context.dimension?.[key])])),
     logistic_ids: [...(context.logistic_ids || [])].map(String), location_id: String(context.location_id || ''), size_chart_image_url: String(context.size_chart_image_url || '') }
 }
-export function creationContext(context = {}, requiredFields = [], values = {}) {
+export function creationContext(context = {}, requiredFields = [], values = {}, useAgniShipping = false) {
   const result = { ...context, ...(context.dimension ? { dimension: { ...context.dimension } } : {}), ...(context.logistic_ids ? { logistic_ids: [...context.logistic_ids] } : {}) }
+  if (useAgniShipping === true) { result.use_agni_shipping = true; delete result.weight; delete result.dimension; delete result.logistic_ids }
+  else if ('use_agni_shipping' in result) { result.use_agni_shipping = false }
   const invalid = field => { throw Error(`Lengkapi ${field.label || field.key} dengan nilai yang valid.`) }
   for (const field of requiredFields) {
+    if (useAgniShipping === true && ['weight', 'dimension', 'logistic_ids'].includes(field.key)) continue
     if (field.key === 'dimension') {
       const dimension = {}
       for (const key of dimensionKeys) {

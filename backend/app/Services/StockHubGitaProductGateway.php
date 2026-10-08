@@ -79,7 +79,7 @@ class StockHubGitaProductGateway
     public function payload(array $s, array $context, array $images, array $logistics): array
     {
         $p = $s['parent'];
-        $body = ['item_name' => $p['item_name'], 'item_sku' => $p['item_sku'], 'category_id' => (int) $context['category_id'], 'item_status' => 'UNLIST', 'description_type' => $p['description_type'], 'weight' => $context['weight'], 'dimension' => $context['dimension'], 'image' => ['image_id_list' => array_map(fn ($url) => $this->imageId($url, 'normal', $images), $s['gallery'])], 'attribute_list' => $p['attribute_list'], 'brand' => [...$p['brand'], 'brand_id' => (int) $p['brand']['brand_id']], 'logistic_info' => $logistics, 'pre_order' => $p['pre_order'], 'original_price' => $s['variants'][0]['price'], 'seller_stock' => $this->sellerStock($s['has_model'] ? 0 : $s['variants'][0]['stock'], $context)];
+        $body = ['item_name' => $p['item_name'], 'item_sku' => $p['item_sku'], 'category_id' => (int) $context['category_id'], 'item_status' => 'UNLIST', 'description_type' => $p['description_type'], 'weight' => $context['weight'], ...(array_key_exists('dimension', $context) ? ['dimension' => $context['dimension']] : []), 'image' => ['image_id_list' => array_map(fn ($url) => $this->imageId($url, 'normal', $images), $s['gallery'])], 'attribute_list' => $p['attribute_list'], 'brand' => [...$p['brand'], 'brand_id' => (int) $p['brand']['brand_id']], 'logistic_info' => $logistics, 'pre_order' => $p['pre_order'], 'original_price' => $s['variants'][0]['price'], 'seller_stock' => $this->sellerStock($s['has_model'] ? 0 : $s['variants'][0]['stock'], $context)];
         foreach (['condition','item_dangerous','gtin_code'] as $f) { if (isset($p[$f]) && $p[$f] !== '') { $body[$f] = $p[$f]; } }
         if ($p['description_type'] === 'normal') { $body['description'] = $p['description']; }
         else { $body['description_info']['extended_description']['field_list'] = array_map(fn ($f) => $f['field_type'] === 'text' ? $f : ['field_type' => 'image', 'image_info' => ['image_id' => $this->imageId($f['url'], 'desc', $images)]], $p['description_fields']); }
@@ -125,7 +125,10 @@ class StockHubGitaProductGateway
             if (array_key_exists($f, $expected)) { $this->need(array_key_exists($f, $p) && $p[$f] === $expected[$f], 'Konten induk Gita belum sama dengan sumber.'); }
         }
         $this->need((string) ($p['category_id'] ?? '') === (string) $expected['category_id'] && is_numeric($p['weight'] ?? null) && 0 + $p['weight'] === $expected['weight'], 'Kategori/berat Gita belum sama.');
-        $this->need($this->canonical($p['dimension'] ?? null) === $this->canonical($expected['dimension']) && $this->canonical($p['pre_order'] ?? null) === $this->canonical($expected['pre_order']), 'Dimensi/waktu pengiriman Gita belum sama.');
+        $dimensionsMatch = array_key_exists('dimension', $expected)
+            ? $this->canonical($p['dimension'] ?? null) === $this->canonical($expected['dimension'])
+            : StockHubGitaProductMetadata::emptyDimensions($p['dimension'] ?? null);
+        $this->need($dimensionsMatch && $this->canonical($p['pre_order'] ?? null) === $this->canonical($expected['pre_order']), 'Dimensi/waktu pengiriman Gita belum sama.');
         $this->need(($p['brand']['brand_id'] ?? null) !== null && (string) $p['brand']['brand_id'] === (string) $expected['brand']['brand_id'] && ($p['brand']['original_brand_name'] ?? null) === $expected['brand']['original_brand_name'], 'Merek Gita belum sama.');
         $this->need($this->canonical(StockHubGitaProductSource::attributes($p['attribute_list'] ?? [])) === $this->canonical($expected['attribute_list']), 'Atribut Gita belum sama.');
         $this->need($this->canonical(StockHubGitaProductSource::logistics($p['logistic_info'] ?? [])) === $this->canonical($expected['logistic_info']), 'Saluran pengiriman Gita belum sama.');

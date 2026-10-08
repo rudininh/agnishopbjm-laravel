@@ -31,6 +31,8 @@ class StockHubGitaProductTest extends TestCase
     private array $targetModelExtras = [];
     private array $catalogPages = [];
     private ?array $parentRejection = null;
+    private array $itemLimitExtras = [];
+    private array $targetParentExtras = [];
 
     protected function setUp(): void
     {
@@ -84,7 +86,7 @@ class StockHubGitaProductTest extends TestCase
             } elseif ($path === '/api/v2/product/get_category') {
                 $data = ['category_list' => [['category_id' => 100493, 'display_category_name' => 'Hijab Instan', 'parent_category_id' => 100, 'has_children' => $this->mode === 'category']]];
             } elseif ($path === '/api/v2/product/get_item_limit') {
-                $data = $this->limits();
+                $data = [...$this->limits(), ...$this->itemLimitExtras];
             } elseif ($path === '/api/v2/product/get_attribute_tree') {
                 $data = ['list' => [['category_id' => 100493, 'attribute_tree' => [['attribute_id' => 1, 'mandatory' => true, 'attribute_info' => ['input_type' => 1, 'max_value_count' => 1], 'attribute_value_list' => [['value_id' => 2, 'name' => 'Cotton', 'child_attribute_list' => $this->mode === 'attribute' ? [['attribute_id' => 3, 'mandatory' => true, 'attribute_info' => ['input_type' => 1, 'max_value_count' => 1], 'attribute_value_list' => []]] : []]]]]]]];
                 if ($this->mode === 'canonical') { $data['list'][0]['attribute_tree'][] = ['attribute_id' => 4, 'mandatory' => false, 'attribute_info' => ['input_type' => 1, 'max_value_count' => 1], 'attribute_value_list' => [['value_id' => 5, 'name' => 'Soft']]]; }
@@ -202,7 +204,7 @@ class StockHubGitaProductTest extends TestCase
         $p = [...$this->sourceParent(), ...$this->parent, 'item_id' => 200, 'shop_id' => 22, 'has_model' => count($this->models) > 0, 'image' => [...($this->parent['image'] ?? []), 'image_url_list' => array_map(fn ($id) => 'https://cf.shopee.co.id/file/'.$id, $this->parent['image']['image_id_list'] ?? [])], 'size_chart' => $this->parent['size_chart_info']['size_chart'] ?? '', 'price_info' => [['current_price' => $this->parent['original_price'] ?? 150000, 'currency' => 'IDR']], 'stock_info_v2' => ['summary_info' => ['total_available_stock' => $this->parent['seller_stock'][0]['stock'] ?? 0]]];
         if ($this->mode === 'readback_stock' && $this->models) { $this->models[0]['stock_info_v2']['summary_info']['total_available_stock'] = 1; }
         if ($this->mode === 'readback_gallery') { $p['image']['image_id_list'] = ['wrong-image']; }
-        return $p;
+        return [...$p, ...$this->targetParentExtras];
     }
 
     private function targetTiers(): array
@@ -507,6 +509,122 @@ class StockHubGitaProductTest extends TestCase
         $r = $this->finish($this->start(['dimension' => ['package_length' => 0, 'package_width' => 0, 'package_height' => 0]]));
         $this->assertSame('blocked', $r['status']);
         $this->assertSame(['dimension'], array_column($r['required_fields'], 'key'));
+        $this->assertSame([], $this->writes);
+        $this->assertSame([], $this->downloadRequests);
+    }
+
+    public function test_agni_package_mode_uses_fresh_source_and_omits_optional_empty_dimensions(): void
+    {
+        $this->itemLimitExtras = ['dimension_limit' => ['dimension_mandatory' => false]];
+        $this->sourceExtras = ['weight' => '0.15', 'dimension' => ['package_length' => 0, 'package_width' => 0, 'package_height' => 0]];
+        $r = $this->finish($this->start(['use_agni_shipping' => true, 'weight' => 5, 'dimension' => ['package_length' => 100, 'package_width' => 100, 'package_height' => 5], 'logistic_ids' => ['999']]));
+        $this->assertSame('success', $r['status'], json_encode($r));
+        $this->assertSame(0.15, $this->writes[0][1]['weight']);
+        $this->assertArrayNotHasKey('dimension', $this->writes[0][1]);
+        $this->assertSame([8003], array_column($this->writes[0][1]['logistic_info'], 'logistic_id'));
+        $this->assertTrue($r['context']['use_agni_shipping']);
+        $this->assertArrayNotHasKey('dimension', $r['context']);
+        $this->assertSame(19, DB::table('stock_master')->value('stock'));
+        Http::assertNotSent(fn ($request) => $request->method() !== 'GET' && str_contains($request->url(), 'shop_id=11'));
+    }
+
+    public function test_optional_empty_source_dimensions_are_omitted_by_default(): void
+    {
+        $this->itemLimitExtras = ['dimension_limit' => ['dimension_mandatory' => false]];
+        $this->sourceExtras = ['dimension' => ['package_length' => 0, 'package_width' => 0, 'package_height' => 0]];
+        $r = $this->finish($this->start());
+        $this->assertSame('success', $r['status'], json_encode($r));
+        $this->assertArrayNotHasKey('dimension', $this->writes[0][1]);
+        $state = json_decode(DB::table('stock_hub_gita_product_runs')->where('id', $r['run_id'])->value('state'), true);
+        $this->assertTrue($state['dimension_omitted']);
+    }
+
+    public function test_optional_dimensions_do_not_accept_explicit_zero_manual_measurements(): void
+    {
+        $this->itemLimitExtras = ['dimension_limit' => ['dimension_mandatory' => false]];
+        $r = $this->finish($this->start(['dimension' => ['package_length' => 0, 'package_width' => 0, 'package_height' => 0]]));
+        $this->assertSame('blocked', $r['status']);
+        $this->assertSame(['dimension'], array_column($r['required_fields'], 'key'));
+        $this->assertSame([], $this->writes);
+        $this->assertSame([], $this->downloadRequests);
+    }
+
+    public static function requiredOrInvalidSourceDimensions(): array
+    {
+        return [
+            'mandatory zero' => [true, ['package_length' => 0, 'package_width' => 0, 'package_height' => 0]],
+            'unknown rule' => [null, ['package_length' => 0, 'package_width' => 0, 'package_height' => 0]],
+            'partial optional' => [false, ['package_length' => 10, 'package_width' => 0, 'package_height' => 3]],
+            'negative optional' => [false, ['package_length' => -1, 'package_width' => 0, 'package_height' => 0]],
+            'fractional optional' => [false, ['package_length' => 0.5, 'package_width' => 1, 'package_height' => 1]],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('requiredOrInvalidSourceDimensions')]
+    public function test_source_mode_does_not_hide_required_or_invalid_dimensions(?bool $mandatory, array $dimension): void
+    {
+        $this->itemLimitExtras = ['dimension_limit' => ['dimension_mandatory' => $mandatory]];
+        $this->sourceExtras = ['dimension' => $dimension];
+        $r = $this->finish($this->start(['use_agni_shipping' => true]));
+        $this->assertSame('blocked', $r['status']);
+        $this->assertSame(['dimension'], array_column($r['required_fields'], 'key'));
+        $this->assertSame([], $this->writes);
+        $this->assertSame([], $this->downloadRequests);
+    }
+
+    public static function forgedOmissionEvidence(): array
+    {
+        return ['no evidence' => ['marker'], 'mandatory rule' => ['rule'], 'nonempty source' => ['source'], 'context zero' => ['context'], 'payload zero' => ['payload']];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('forgedOmissionEvidence')]
+    public function test_staged_dimension_omission_requires_complete_matching_evidence(string $changed): void
+    {
+        $this->itemLimitExtras = ['dimension_limit' => ['dimension_mandatory' => false]];
+        $zero = ['package_length' => 0, 'package_width' => 0, 'package_height' => 0];
+        $this->sourceExtras = ['dimension' => $zero];
+        $r = $this->start();
+        $stage = $changed === 'payload' ? 'submitting' : 'scanning';
+        for ($i = 0; $i < 40 && $r['status'] !== $stage; $i++) { $r = $this->postJson($this->base.'/runs/'.$r['run_id'].'/step')->assertOk()->json('data'); }
+        $this->assertSame($stage, $r['status']);
+        $state = json_decode(DB::table('stock_hub_gita_product_runs')->where('id', $r['run_id'])->value('state'), true);
+        if ($changed === 'marker') { unset($state['dimension_omitted']); }
+        if ($changed === 'rule') { $state['limits']['dimension_limit']['dimension_mandatory'] = true; }
+        if ($changed === 'source') { $state['source']['parent']['dimension'] = ['package_length' => 10, 'package_width' => 20, 'package_height' => 3]; }
+        if ($changed === 'context') { $state['context']['dimension'] = $zero; }
+        if ($changed === 'payload') { $state['payload']['dimension'] = $zero; }
+        DB::table('stock_hub_gita_product_runs')->where('id', $r['run_id'])->update(['state' => json_encode($state)]);
+        $requests = count(Http::recorded());
+        $r = $this->postJson($this->base.'/runs/'.$r['run_id'].'/step')->assertOk()->json('data');
+        $this->assertSame('blocked', $r['status']);
+        $this->assertSame(['dimension'], array_column($r['required_fields'], 'key'));
+        $this->assertSame($requests, count(Http::recorded()));
+        $this->assertSame([], $this->writes);
+        $this->assertNull(DB::table('stock_hub_gita_product_runs')->where('id', $r['run_id'])->value('attempted_at'));
+    }
+
+    public function test_omitted_dimensions_do_not_accept_invented_positive_readback(): void
+    {
+        $this->itemLimitExtras = ['dimension_limit' => ['dimension_mandatory' => false]];
+        $this->sourceExtras = ['dimension' => ['package_length' => 0, 'package_width' => 0, 'package_height' => 0]];
+        $this->targetParentExtras = ['dimension' => ['package_length' => 10, 'package_width' => 20, 'package_height' => 3]];
+        $r = $this->finish($this->start());
+        $this->assertSame('partial_unverified', $r['status']);
+        $this->assertFalse($r['can_retry']);
+        $this->assertSame('200', $r['remote_product_id']);
+        $this->assertCount(1, $this->writes);
+    }
+
+    public function test_agni_package_mode_does_not_silently_drop_unavailable_source_shipping(): void
+    {
+        $this->sourceExtras = ['logistic_info' => [
+            ['logistic_id' => 8003, 'enabled' => true, 'is_free' => false],
+            ['logistic_id' => 8007, 'enabled' => true, 'is_free' => false],
+        ]];
+        $r = $this->finish($this->start(['use_agni_shipping' => true]));
+        $this->assertSame('blocked', $r['status']);
+        $this->assertSame(['logistic_ids'], array_column($r['required_fields'], 'key'));
+        $this->assertSame(['8003', '8007'], $r['context']['logistic_ids']);
         $this->assertSame([], $this->writes);
         $this->assertSame([], $this->downloadRequests);
     }

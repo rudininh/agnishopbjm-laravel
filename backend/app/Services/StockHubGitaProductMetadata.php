@@ -21,6 +21,29 @@ class StockHubGitaProductMetadata
         return true;
     }
 
+    public static function emptyDimensions(mixed $dimension): bool
+    {
+        if ($dimension === null || $dimension === []) { return true; }
+        if (!is_array($dimension) || count($dimension) !== 3) { return false; }
+        foreach (['package_length', 'package_width', 'package_height'] as $key) {
+            if (!array_key_exists($key, $dimension) || $dimension[$key] !== 0) { return false; }
+        }
+        return true;
+    }
+
+    public static function preparedDimensionsValid(array $state, bool $submission): bool
+    {
+        $context = $state['context'] ?? [];
+        if (($state['dimension_omitted'] ?? false) !== true) {
+            return self::positiveDimensions($context['dimension'] ?? null)
+                && (!$submission || self::positiveDimensions($state['payload']['dimension'] ?? null));
+        }
+        return ($state['limits']['dimension_limit']['dimension_mandatory'] ?? null) === false
+            && self::emptyDimensions($state['source']['parent']['dimension'] ?? null)
+            && !array_key_exists('dimension', $context)
+            && (!$submission || (is_array($state['payload'] ?? null) && !array_key_exists('dimension', $state['payload'])));
+    }
+
     public function categories(): array
     {
         $data = $this->read('product/get_category');
@@ -54,6 +77,7 @@ class StockHubGitaProductMetadata
 
     public function validate(array $source, array $input): array
     {
+        if (($input['use_agni_shipping'] ?? false) === true) { unset($input['weight'], $input['dimension'], $input['logistic_ids']); }
         $p = $source['parent']; $context = $input; $fields = [];
         $category = $input['category_id'] ?? $p['category_id']; $context['category_id'] = $category;
         $tree = $this->categories();
@@ -64,7 +88,9 @@ class StockHubGitaProductMetadata
         if (!is_numeric($weight) || !is_finite((float) $weight) || (float) $weight <= 0) { $fields[] = $this->field('weight'); }
         else { $context['weight'] = 0 + $weight; }
         $dim = $input['dimension'] ?? $p['dimension'] ?? null;
-        if (!self::positiveDimensions($dim)) { $fields[] = $this->field('dimension'); }
+        $dimensionOmitted = !array_key_exists('dimension', $input) && self::emptyDimensions($dim) && ($limits['dimension_limit']['dimension_mandatory'] ?? null) === false;
+        if ($dimensionOmitted) { unset($context['dimension']); }
+        elseif (!self::positiveDimensions($dim)) { $fields[] = $this->field('dimension'); }
         else { $context['dimension'] = $dim; }
         $chart = $input['size_chart_image_url'] ?? $source['chart'];
         if ($chart !== '') {
@@ -106,11 +132,13 @@ class StockHubGitaProductMetadata
             $this->need(empty($t['mandatory']) && empty($t['is_mandatory']), 'Kategori Gita mewajibkan varian standar yang belum terpetakan.');
         }
         ['available' => $available, 'options' => $options] = $this->shippingChannels();
-        $selected = $input['logistic_ids'] ?? array_values(array_intersect(array_map(fn ($l) => (string) $l['logistic_id'], $p['logistic_info']), array_column($options, 'id')));
+        $sourceChannels = array_map(fn ($l) => (string) $l['logistic_id'], $p['logistic_info']);
+        $selected = $input['logistic_ids'] ?? (($input['use_agni_shipping'] ?? false) === true ? $sourceChannels : array_values(array_intersect($sourceChannels, array_column($options, 'id'))));
         $selected = array_values(array_unique($selected)); sort($selected, SORT_STRING); $context['logistic_ids'] = $selected;
         $logistics = []; $bad = $selected === [];
         foreach ($selected as $cid) {
             $ch = $available[$cid] ?? null;
+            if (($ch['volume_limit']['item_min_volume'] ?? 0) > 0 && !self::positiveDimensions($context['dimension'] ?? null) && !in_array('dimension', array_column($fields, 'key'), true)) { $fields[] = $this->field('dimension'); }
             $src = array_values(array_filter($p['logistic_info'], fn ($l) => (string) $l['logistic_id'] === $cid))[0] ?? ['logistic_id' => (int) $cid, 'enabled' => true, 'is_free' => false];
             if (!$ch || !in_array($cid, array_column($options, 'id'), true) || !$this->shippingCompatible($ch, $src, $context)) { $bad = true; continue; }
             foreach ($source['variants'] as $variant) {
@@ -140,7 +168,7 @@ class StockHubGitaProductMetadata
             if ($location === null || !in_array($location, array_column($locations, 'id'), true)) { $fields[] = $this->field('location_id', $locations); }
             else { $context['location_id'] = $location; }
         } elseif (isset($input['location_id']) && $input['location_id'] !== '') { $fields[] = $this->field('location_id', []); }
-        return ['context' => $context, 'required_fields' => $fields, 'logistics' => $logistics, 'limits' => $limits];
+        return ['context' => $context, 'required_fields' => $fields, 'logistics' => $logistics, 'limits' => $limits, 'dimension_omitted' => $dimensionOmitted];
     }
 
     private function range(int|float $value, array $limits, string $key, string $message): void
@@ -234,7 +262,7 @@ class StockHubGitaProductMetadata
         foreach (['item_min_weight' => false, 'item_max_weight' => true] as $f => $max) { $v = $ch['weight_limit'][$f] ?? 0; if ($v > 0 && ($max ? $w > $v : $w < $v)) { return false; } }
         foreach (['length','width','height'] as $f) { $max = $ch['item_max_dimension'][$f] ?? 0; if ($max > 0 && ($d['package_'.$f] ?? 0) > $max) { return false; } }
         $sum = $ch['item_max_dimension']['dimension_sum'] ?? 0; if ($sum > 0 && array_sum($d) > $sum) { return false; }
-        $volume = array_product($d);
+        $volume = self::positiveDimensions($d) ? array_product($d) : 0;
         foreach (['item_min_volume' => false, 'item_max_volume' => true] as $f => $max) { $v = $ch['volume_limit'][$f] ?? 0; if ($v > 0 && ($max ? $volume > $v : $volume < $v)) { return false; } }
         if (!empty($ch['block_seller_cover_shipping_fee']) && !empty($source['is_free'])) { return false; }
         $fee = $ch['fee_type'] ?? null;

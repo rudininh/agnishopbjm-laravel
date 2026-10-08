@@ -15,7 +15,8 @@ class StockHubGitaProductController extends Controller
         abort_if(array_diff(array_keys($request->all()), ['source_product_id','request_key','context']), 422, 'Input produk Gita tidak valid.');
         $v = Validator::make($request->all(), [
             'source_product_id' => ['required','string','regex:/^[0-9]+$/D','max:64'], 'request_key' => ['required','uuid'],
-            'context' => ['sometimes','array:category_id,weight,dimension,logistic_ids,location_id,size_chart_image_url'],
+            'context' => ['sometimes','array:category_id,weight,dimension,logistic_ids,location_id,size_chart_image_url,use_agni_shipping'],
+            'context.use_agni_shipping' => ['sometimes', function ($attribute, $value, $fail) { if (!is_bool($value)) { $fail('Pilihan data Agni tidak valid.'); } }],
             'context.category_id' => ['sometimes','string','regex:/^[0-9]+$/D','max:64'],
             'context.weight' => ['sometimes','numeric','gt:0','max:1000'],
             'context.dimension' => ['sometimes','array:package_length,package_width,package_height'],

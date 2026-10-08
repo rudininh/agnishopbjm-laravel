@@ -172,3 +172,27 @@ remain intact. Retry continues to validate against fresh marketplace metadata.
 - [x] Test-first renderer proof: preserve saved selection until click, restore exact Agni set without POST or measurement changes, refuse missing target channels and unavailable source metadata.
 - [x] Implement snapshot `source_logistic_ids` (nullable string ID array) and form reset button with existing busy/loading/disabled guards.
 - [x] Run affected/backend full and frontend full/build, independent review, publish and verify HTTP asset hashes, record durable facts and commit locally.
+
+## Follow-up: use fresh Agni package data and omit optional empty dimensions
+
+The operator explicitly requests weight, dimensions and shipping from Agni.
+Add an opt-in correction checkbox `Ambil data paket dari Agni`. It starts a
+normal guarded retry with context `use_agni_shipping=true`; backend metadata
+discards historical weight/dimension/channel overrides and uses its freshly
+read source. Other context, source content and no-replay rules stay intact.
+
+The saved official add_item contract marks dimension optional; fresh category
+metadata explicitly reports dimension_mandatory=false for the affected source.
+An absent/all-zero source dimension may be omitted only with that explicit
+target permission and no manual dimension override. Partial, negative,
+fractional or explicitly zero manual dimensions continue to require correction.
+Persist omission evidence and verify it before staged operations and submission;
+legacy runs without that evidence keep the existing positive-dimension guard.
+For omitted dimensions, readback must be absent/empty/all-zero, never a newly
+invented positive dimension. Do not infer success from a preflight.
+
+- [x] Backend RED/GREEN: fresh source overrides old corrections; zero optional source dimensions omitted through payload/readback; mandatory/unknown/invalid/manual inputs block; legacy/forged/staged payload zeros cannot bypass guards.
+- [x] Frontend RED/GREEN: explicit checkbox excludes three manual fields, retains other context and emits no request until submit; turning it off restores manual validation; loading/shipping choices do not block source-mode retry.
+- [x] Implement metadata omission evidence, guarded payload/readback, context input and checkbox; independent review.
+- [x] Full suites/build, GET-only live preflight, publish/hash verification and docs. No live marketplace writes for verification.
+- [x] Record durable memory and commit locally after final diff check.

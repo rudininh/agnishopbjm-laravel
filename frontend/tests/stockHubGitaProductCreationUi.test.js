@@ -98,7 +98,7 @@ test('Gita form corrects a rejected HTTPS chart and retains grouped shipping and
     assert.ok(view.text(view.root).includes('Fashion / Tas'))
     const selects = fields.filter(el => el.type === 'select')
     assert.equal(selects.length, 2)
-    const shipping = fields.filter(el => el.type === 'input' && el.props.type === 'checkbox')
+    const shipping = fields.filter(el => el.type === 'input' && el.props.type === 'checkbox' && el.props['aria-label'] !== 'Ambil data paket dari Agni')
     assert.equal(shipping.length, 2); assert.equal(shipping[0].props.checked, true); assert.equal(shipping[1].props.checked, false)
     assert.equal(view.button('Pilih Reguler saja'), undefined)
     numbers[1].props['onUpdate:modelValue']('12'); shipping[0].props.onChange({ target: { checked: false } }); shipping[1].props.onChange({ target: { checked: true } }); selects[1].props['onUpdate:modelValue']('new'); chart.props['onUpdate:modelValue']('https://cdn.example/corrected-chart.jpg')
@@ -183,7 +183,7 @@ test('weight rejection loads current named shipping choices before allowing expl
     assert.ok(view.text(view.root).includes('Reguler (Cashless)')); assert.ok(view.text(view.root).includes('Hemat Kargo'))
     const dialog = view.all().find(el => el.props.role === 'dialog')
     const shipping = view.all().filter(el => {
-      if (el.type !== 'input' || el.props.type !== 'checkbox') return false
+      if (el.type !== 'input' || el.props.type !== 'checkbox' || el.props['aria-label'] === 'Ambil data paket dari Agni') return false
       for (let parent = el.parent; parent; parent = parent.parent) if (parent === dialog) return true
       return false
     })
@@ -277,6 +277,53 @@ for (const { name, sourceIds, disabled } of [
   })
 }
 
+test('explicit Agni package mode retries with source intent despite unavailable manual shipping choices', async () => {
+  const saved = { weight: 5, dimension: { package_length: 100, package_width: 100, package_height: 5 }, logistic_ids: ['8003'], location_id: 'loc', size_chart_image_url: 'https://cdn.example/chart.jpg' }, payloads = []
+  const required_fields = [{ key: 'weight', type: 'number', label: 'Berat' }, { key: 'dimension', type: 'number', label: 'Dimensi' }, { key: 'logistic_ids', type: 'multiselect', label: 'Pengiriman', options: [] }]
+  const api = { shopeeItems: async () => ({ data: { items: [structuredClone(item)] } }),
+    gitaProductCreationSource: async () => envelope(snapshot('rejected', { can_retry: true, context: saved, required_fields })),
+    gitaProductCreationShippingChannels: async () => { throw Error('offline') },
+    startGitaProductCreation: async payload => { payloads.push(payload); return envelope(snapshot('success', { result: { product_id: '200', published: true, skus: [] } })) } }
+  const view = mount(await loadComponent('../src/pages/ShopeeStock.vue', api), { unified: true, accountKey: 'shopee-agnishopbjm' })
+  try {
+    await tick(); view.button('Buat di Gitashop').props.onClick(); await tick()
+    assert.equal(view.button('Lengkapi dan lanjutkan').props.disabled, true)
+    const choice = view.all().find(el => el.type === 'input' && el.props['aria-label'] === 'Ambil data paket dari Agni')
+    assert.ok(choice)
+    choice.props.onChange({ target: { checked: true } }); await tick()
+    assert.equal(payloads.length, 0); assert.equal(view.button('Lengkapi dan lanjutkan').props.disabled, false)
+    const dialog = view.all().find(el => el.props.role === 'dialog')
+    const numbersInDialog = () => view.all().filter(el => { if (el.type !== 'input' || el.props.type !== 'number') return false; for (let p = el.parent; p; p = p.parent) if (p === dialog) return true; return false })
+    assert.equal(numbersInDialog().length, 0)
+    choice.props.onChange({ target: { checked: false } }); await tick()
+    assert.equal(numbersInDialog().length, 4); assert.equal(view.button('Lengkapi dan lanjutkan').props.disabled, true)
+    choice.props.onChange({ target: { checked: true } }); await tick()
+    view.all().find(el => el.type === 'form').props.onSubmit({ preventDefault() {} }); await tick()
+    assert.deepEqual(payloads[0].context, { location_id: 'loc', size_chart_image_url: 'https://cdn.example/chart.jpg', use_agni_shipping: true })
+  } finally { view.app.unmount() }
+})
+
+test('recovered Agni mode loads shipping choices when operator switches back to manual', async () => {
+  const saved = { use_agni_shipping: true, weight: 0.2, dimension: { package_length: 10, package_width: 10, package_height: 5 }, logistic_ids: ['8003'] }, payloads = []
+  const required_fields = [{ key: 'weight', type: 'number', label: 'Berat' }, { key: 'dimension', type: 'number', label: 'Dimensi' }, { key: 'logistic_ids', type: 'multiselect', label: 'Pengiriman', options: [] }]
+  let reads = 0
+  const api = { shopeeItems: async () => ({ data: { items: [structuredClone(item)] } }),
+    gitaProductCreationSource: async () => envelope(snapshot('blocked', { context: saved, required_fields })),
+    gitaProductCreationShippingChannels: async () => { reads++; return envelope([{ id: '8003', name: 'Reguler (Cashless)' }]) },
+    startGitaProductCreation: async payload => { payloads.push(payload); return envelope(snapshot('success', { result: { product_id: '200', published: true, skus: [] } })) } }
+  const view = mount(await loadComponent('../src/pages/ShopeeStock.vue', api), { unified: true, accountKey: 'shopee-agnishopbjm' })
+  try {
+    await tick(); view.button('Buat di Gitashop').props.onClick(); await tick()
+    assert.equal(reads, 0)
+    const choice = view.all().find(el => el.type === 'input' && el.props['aria-label'] === 'Ambil data paket dari Agni')
+    assert.equal(choice.props.checked, true)
+    choice.props.onChange({ target: { checked: false } }); await tick()
+    assert.equal(reads, 1); assert.equal(view.button('Lengkapi dan lanjutkan').props.disabled, false)
+    view.all().find(el => el.type === 'form').props.onSubmit({ preventDefault() {} }); await tick()
+    assert.deepEqual(payloads[0].context, { ...saved, use_agni_shipping: false })
+  } finally { view.app.unmount() }
+})
+
 
 test('cross-target clicks in the same tick cannot start concurrent creation requests', async () => {
   let finish; const calls = []
@@ -298,7 +345,7 @@ test('Gita grouped correction fields keep each dimension label independent and a
   const view = mount(await loadComponent('../src/components/StockHubGitaProductCreation.vue', api), {})
   try {
     await tick(); const component = view.app._instance.exposed; await component.request(item); await tick()
-    const labels = view.all().filter(el => el.type === 'label')
+    const labels = view.all().filter(el => el.type === 'label' && el.children.some(child => child.type === 'input' && child.props.type === 'number'))
     for (const label of labels) for (let parent = label.parent; parent; parent = parent.parent) assert.notEqual(parent.type, 'label')
     assert.equal(labels.length, 3)
   } finally { view.app.unmount() }

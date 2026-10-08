@@ -306,3 +306,46 @@ no live uploads, creates, model initialization, publication or stock writes.
 
 Final full backend verification passed **765 tests / 12,700 assertions**,
 exit 0 (02:46.771), with the source-selection snapshot change included.
+
+## Follow-up: fresh Agni package data and optional empty dimensions
+
+The operator confirmed that package weight, dimensions and shipping should
+come from Agni. The explicit `Ambil data paket dari Agni` checkbox removes
+historical manual package overrides from a guarded retry. Metadata uses the
+fresh source and requires every enabled source shipping channel to be usable
+in Gita. Source mode never silently drops unavailable channels. Switching
+back to manual mode restores fields and loads current shipping choices.
+
+The official add_item contract permits omission of dimensions. An empty or
+all-zero source dimension is omitted only with fresh explicit optional-category
+evidence and no manual override. Mandatory/unknown requirements and invalid
+or manual-zero dimensions still block. Durable omission evidence is checked
+before scanning/uploading/submitting, and submission also requires absent
+payload dimensions. Legacy positive-dimension and attempted/known-parent
+no-replay guards remain intact. Positive readback dimensions after omission
+cannot claim verification.
+
+Backend and renderer RED/GREEN regressions cover fresh source overrides,
+optional omission, mandatory/unknown/invalid/manual dimensions, staged evidence
+tampering, readback mismatch and no automatic POST from the checkbox. Review
+found two issues: an unavailable source channel could be silently omitted,
+and recovered source mode did not load shipping choices when switched to
+manual. Both were reproduced with failing regressions and corrected. Final
+independent review passed **24 backend tests / 1,792 assertions** and **48
+frontend tests**, with no remaining actionable findings.
+
+Final full verification: **780 backend tests / 13,342 assertions**, exit 0
+(03:20.526); **170 frontend tests**, exit 0; Vite production build passed
+with its existing main-chunk size warning. PHP syntax and diff checks passed.
+GET-only source/metadata/payload preflight returned no required fields,
+matching source weight and the complete source shipping set, explicit optional
+dimension evidence, no dimension in payload, passing staged/submission guards
+and an unchanged durable run. This does not establish Shopee acceptance.
+
+Published `/sinkronisasi-stok` returned HTTP 200 and referenced
+`/assets/index-CLQA042J.js` and `/assets/index-C-7dR8Uu.css`. Both assets and
+all three PDF assets returned HTTP 200 with SHA-256 hashes matching dist.
+Prior assets are retained. Real Vue-renderer behavior and HTTP publication
+were verified; no successful real browser check is claimed. No live image
+upload, product create, model initialization, publication or stock writes
+were performed by verification.

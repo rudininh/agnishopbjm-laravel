@@ -53,8 +53,7 @@ class StockHubGitaProductService
             $row = $this->row($id); $state = json_decode($row->state, true, 512, JSON_THROW_ON_ERROR);
             if ($row->attempted_at && !$row->remote_product_id) { $this->save($id, 'submitted_unverified', $state, 'Hasil pembuatan induk belum diketahui. Periksa Seller Center; produk tidak akan dibuat ulang.'); return $this->show($id); }
             if (!$row->remote_product_id && in_array($row->status, ['scanning','uploading','submitting'], true)
-                && (!StockHubGitaProductMetadata::positiveDimensions($state['context']['dimension'] ?? null)
-                    || ($row->status === 'submitting' && !StockHubGitaProductMetadata::positiveDimensions($state['payload']['dimension'] ?? null)))) {
+                && !StockHubGitaProductMetadata::preparedDimensionsValid($state, $row->status === 'submitting')) {
                 $state['required_fields'] = [$this->gateway->correctionField('dimension')];
                 $this->save($id, 'blocked', $state, 'Lengkapi panjang, lebar, dan tinggi paket dalam cm dengan bilangan bulat lebih dari nol.');
                 return $this->show($id);

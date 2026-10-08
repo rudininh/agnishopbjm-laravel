@@ -299,6 +299,14 @@ test('category leaf search includes parent names and partial result retains actu
   assert.equal(creationRowResult(run('success', { result: { ...result, published: true } })).accepted, true)
 })
 
+test('Agni package mode discards historical package overrides and retains other validated context', () => {
+  const saved = { category_id: '10', weight: 5, dimension: { package_length: 100, package_width: 100, package_height: 5 }, logistic_ids: ['999'], location_id: 'loc' }
+  const fields = [{ key: 'weight', type: 'number' }, { key: 'dimension', type: 'number' }, { key: 'logistic_ids', type: 'multiselect', options: [] }, { key: 'location_id', type: 'select', options: [{ id: 'new', name: 'Warehouse' }] }]
+  assert.deepEqual(creationContext(saved, fields, { location_id: 'new' }, true), { category_id: '10', location_id: 'new', use_agni_shipping: true })
+  assert.throws(() => creationContext(saved, fields, { location_id: 'new' }, false))
+  assert.throws(() => creationContext(saved, fields, { location_id: 'unknown' }, true))
+})
+
 test('Gita and TikTok persist distinct identifier namespaces', async () => {
   const { createTiktokProductController } = await import('../src/pages/stockHubTiktokProductCreationState.js')
   const records = new Map(), storage = { getItem: key => records.get(key), setItem: (key, value) => records.set(key, value) }
