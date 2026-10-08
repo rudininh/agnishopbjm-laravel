@@ -188,8 +188,8 @@
                         <small>SKU Real</small>
                         <strong>{{ tiktokRealSku(sku) || 'Tidak ada SKU' }}</strong>
                         <small v-if="sku.sku_repair_blocked">{{ sku.sku_repair_blocked }}</small>
-                        <small v-else-if="tiktokRealSku(sku) !== templateSku(item, sku)">SKU tidak sesuai template</small>
-                        <small>SKU Template</small>
+                        <small v-else-if="templateSku(item, sku) && tiktokRealSku(sku) !== templateSku(item, sku)">SKU berbeda dari Agni</small>
+                        <small>SKU Acuan Agni</small>
                         <span class="copy-line">
                           <code>{{ templateSku(item, sku) }}</code>
                           <button type="button" title="Copy SKU Template" @click="copyVariationCode(item, sku)" :disabled="mirrorBusy || (!templateSku(item, sku))">Copy</button>
@@ -202,19 +202,11 @@
                       <strong>Stock {{ sku.stock_qty || 0 }}</strong>
                       <span class="variant-actions">
                         <button v-if="unified" :disabled="mirrorBusy || !mirrorTargets.length || loading || repairBusy || Boolean(updatingSkuKey) || Boolean(deletingVariantKey) || Boolean(syncingProductId)" @click="emit('mirror-stock', { type: 'variant', view_account_key: accountKey, product_id: String(item.product_id), variant_id: String(sku.sku_id || sku.tiktok_sku || '') })">Samakan Stok Varian</button>
-                        <button v-if="tiktokRealSku(sku) !== templateSku(item, sku) || sku.sku_repair_blocked" class="update-sku-btn" @click="openSkuRepair(item, sku)" :disabled="mirrorBusy || (repairBusy || Boolean(updatingSkuKey))">Perbaiki sesuai template</button>
-                        <input
-                          v-model.trim="manualSkuDrafts[tiktokSkuKey(item, sku)]"
-                          class="manual-sku-input"
-                          type="text"
-                          :placeholder="templateSku(item, sku) || 'Ketik SKU manual'"
-                          title="Isi SKU manual jika SKU template tidak sesuai"
-                          @keyup.enter="updateMissingSku(item, sku)"
-                        />
+                        <button v-if="templateSku(item, sku) && tiktokRealSku(sku) !== templateSku(item, sku)" class="update-sku-btn" @click="openSkuRepair(item, sku)" :disabled="mirrorBusy || (repairBusy || Boolean(updatingSkuKey))">Perbaiki sesuai Agni</button>
                         <button
                           type="button"
                           class="update-sku-btn"
-                          title="Update SKU real TikTok dari input manual atau SKU template"
+                          title="Buka preview SKU dari Agni"
                           @click="updateMissingSku(item, sku)"
                           :disabled="mirrorBusy || (!canUpdateMissingSku(item, sku) || updatingSkuKey === tiktokSkuKey(item, sku))"
                         >
@@ -253,7 +245,7 @@
       <section class="confirm-modal repair-modal" role="dialog" aria-modal="true" aria-labelledby="tiktok-repair-title">
         <h2 id="tiktok-repair-title">Perbaiki SKU TikTok</h2>
         <p>{{ repairModal.accountName }} · {{ repairModal.productName }}</p>
-        <p>SKU mengikuti nama varian TikTok terbaru. Prefix Item ID yang konsisten dipertahankan; produk tanpa prefix internal memakai Product ID TikTok. Perubahan dikirim ke toko ini setelah konfirmasi.</p>
+        <p>SKU disalin dari varian Shopee Agni yang cocok. Perubahan dikirim ke TikTok setelah konfirmasi.</p>
         <div class="repair-rows">
           <div v-for="row in repairModal.rows" :key="`${row.productId}:${row.skuId}`" class="repair-row">
             <small>{{ row.productName }} · {{ row.productId }}</small>
@@ -348,6 +340,9 @@ const openSkuRepair = async (item = null, sku = null, emptyOnly = false) => {
     message: 'Mengambil katalog TikTok terbaru. Proses ini dapat memerlukan beberapa menit...'
   })
   try {
+    const source = await omnichannelService.shopeeItems(true, { account_key: 'shopee-agnishopbjm' })
+    if (!repairMounted) return
+    if (source.data.sync?.status !== 'ok') throw new Error('Data SKU Agni belum dapat diperbarui. Periksa akun sumber Agni.')
     const response = await omnichannelService.tiktokItems(true, { account_key: accountKey, ...(item ? { product_id: item.product_id } : {}) })
     if (!repairMounted) return
     if (response.data.sync?.status !== 'ok') throw new Error(response.data.sync?.message || 'Sync TikTok gagal.')
@@ -413,7 +408,6 @@ const loading = ref(false)
 const syncingProductId = ref('')
 const updatingSkuKey = ref('')
 const deletingVariantKey = ref('')
-const manualSkuDrafts = reactive({})
 const activeTab = ref('live')
 const page = ref(1)
 const PAGE_SIZE = 20
@@ -521,10 +515,10 @@ const itemHasMissingSku = (item) => (item?.skus || []).some((sku) => missingTikt
 const templateSku = tiktokTemplateSku
 const variationCode = templateSku
 const tiktokSkuKey = (item, sku) => `${item?.product_id || ''}:${sku?.sku_id || sku?.tiktok_sku || ''}`
-const manualSkuValue = (key) => String(manualSkuDrafts[key] || '').trim()
-const targetSku = (item, sku) => manualSkuValue(tiktokSkuKey(item, sku)) || templateSku(item, sku)
+const targetSku = (item, sku) => templateSku(item, sku)
 const canUpdateMissingSku = (item, sku) => Boolean(item?.product_id && (sku?.sku_id || sku?.tiktok_sku) && targetSku(item, sku))
-const canDeleteTiktokVariant = (item, sku) => Boolean(item?.product_id && (sku?.sku_id || sku?.tiktok_sku) && templateSku(item, sku) && (item?.skus?.length || 0) > 1)
+const deleteConfirmationSku = sku => tiktokRealSku(sku) || String(sku?.delete_confirmation_sku || '')
+const canDeleteTiktokVariant = (item, sku) => Boolean(item?.product_id && (sku?.sku_id || sku?.tiktok_sku) && deleteConfirmationSku(sku) && (item?.skus?.length || 0) > 1)
 const copyText = async (value) => {
   const text = String(value || '').trim()
   if (!text) return
@@ -558,32 +552,7 @@ const copyText = async (value) => {
 const copyVariationCode = (item, sku) => copyText(variationCode(item, sku))
 const updateMissingSku = async (item, sku) => {
   if (props.mirrorBusy) return
-  if (!canUpdateMissingSku(item, sku)) return
-
-  const key = tiktokSkuKey(item, sku)
-  updatingSkuKey.value = key
-  syncMessage.value = ''
-
-  try {
-    const sellerSku = targetSku(item, sku)
-    const response = await omnichannelService.updateMarketplaceVariantSku({
-      channel: 'tiktok',
-      ...accountParams(),
-      product_id: item.product_id,
-      sku_id: sku.sku_id || sku.tiktok_sku,
-      seller_sku: sellerSku
-    })
-
-    sku.seller_sku = sellerSku
-    delete manualSkuDrafts[key]
-    syncMessage.value = response.data?.message || `SKU TikTok diupdate: ${sellerSku}`
-    syncTone.value = response.data?.status === 'error' ? 'error' : 'success'
-  } catch (error) {
-    syncMessage.value = error.response?.data?.response?.message || error.response?.data?.message || 'Update SKU TikTok gagal.'
-    syncTone.value = 'error'
-  } finally {
-    updatingSkuKey.value = ''
-  }
+  return openSkuRepair(item, sku)
 }
 const openDeleteVariantModal = (item, sku) => {
   if (props.mirrorBusy) return
@@ -596,7 +565,7 @@ const openDeleteVariantModal = (item, sku) => {
   deleteModal.open = true
   deleteModal.productId = String(item?.product_id || '')
   deleteModal.skuId = String(sku?.sku_id || sku?.tiktok_sku || '')
-  deleteModal.mappingSku = templateSku(item, sku)
+  deleteModal.mappingSku = deleteConfirmationSku(sku)
   deleteModal.productName = String(item?.product_name || '-')
   deleteModal.skuName = String(sku?.sku_name || '-')
   deleteModal.confirmMappingSku = ''

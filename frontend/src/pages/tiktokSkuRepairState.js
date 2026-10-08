@@ -1,4 +1,4 @@
-export const tiktokTemplateSku = (item, sku) => String(sku?.kode_variasi || '')
+export const tiktokTemplateSku = (item, sku) => sku?.sku_repair_blocked ? '' : String(sku?.kode_variasi || '')
 
 export function tiktokSkuRepairRows(items, emptyOnly = false) {
   return (items || []).flatMap(item => (item.skus || []).map(sku => ({

@@ -5,7 +5,7 @@ namespace App\Http\Controllers;
 use App\Services\MarketplaceAccountRegistry;
 use App\Services\TiktokPartialEditSkuPayloadBuilder;
 use App\Services\ShopeeSellerSkuTemplate;
-use App\Services\TiktokSkuRepairPlan;
+use App\Services\MarketplaceSourceSkuRepairService;
 use App\Services\ShopeeSkuTiktokVariantCleanupService;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
@@ -25,6 +25,12 @@ class OmnichannelController extends Controller
     private const SHOPEE_REFRESH_TOKEN_VALID_DAYS = 365;
 
     private ?string $requestedMarketplaceAccountKey = null;
+    private ?MarketplaceSourceSkuRepairService $sourceSkuRepair = null;
+
+    private function sourceSkuRepair(): MarketplaceSourceSkuRepairService
+    {
+        return $this->sourceSkuRepair ??= app(MarketplaceSourceSkuRepairService::class);
+    }
 
     public function dashboard(): JsonResponse
     {
@@ -2779,6 +2785,14 @@ class OmnichannelController extends Controller
             ->get()
             ->groupBy('item_id');
 
+        $skuPlans = [];
+        if ($this->requestedMarketplaceAccountKey === 'shopee-gitacollectionbjm') {
+            foreach ($products as $product) {
+                $skuPlans[(string) $product->item_id] = collect($this->sourceSkuRepair()->plan('shopee-gitacollectionbjm', (string) $product->item_id,
+                    ($models[$product->item_id] ?? collect())->map(fn ($model) => ['id' => (string) $model->model_id, 'name' => (string) $model->name, 'seller_sku' => (string) ($model->model_sku ?? '')])->all()))->keyBy('id');
+            }
+        }
+
         $destinationPresence = $this->requestedMarketplaceAccountKey === self::PRIMARY_SHOPEE_ACCOUNT_KEY
             ? app(\App\Services\MarketplaceProductPresenceService::class)->forProducts($products->map(fn ($item) => [
                 'item_id' => (string) $item->item_id,
@@ -2846,7 +2860,8 @@ class OmnichannelController extends Controller
                     'model_id' => (string) $model->model_id,
                     'name' => $model->name,
                     'model_sku' => $model->model_sku ?? null,
-                    'kode_variasi' => $this->shopeeModelVariationCode((string) $item->item_id, $model),
+                    'kode_variasi' => $this->requestedMarketplaceAccountKey === 'shopee-gitacollectionbjm' ? ($skuPlans[(string) $item->item_id]->get((string) $model->model_id)['target'] ?? '') : $this->shopeeModelVariationCode((string) $item->item_id, $model),
+                    'sku_repair_blocked' => $this->requestedMarketplaceAccountKey === 'shopee-gitacollectionbjm' ? ($skuPlans[(string) $item->item_id]->get((string) $model->model_id)['blocked'] ?? 'Varian Agni belum ditemukan.') : '',
                     'price' => (int) ($model->price ?? 0),
                     'original_price' => (int) ($model->original_price ?? $model->price ?? 0),
                     'stock' => (int) ($model->stock ?? 0),
@@ -4993,8 +5008,8 @@ class OmnichannelController extends Controller
             ],
             'items' => $rows->map(function ($group, string $productId) {
                 $first = $group->first();
-                $repairPlan = collect(app(TiktokSkuRepairPlan::class)->build($productId,
-                    $group->map(fn ($sku): array => (array) $sku)->all()))->keyBy('sku_id');
+                $repairPlan = collect($this->sourceSkuRepair()->plan('tiktok-agnishopbjm', $productId,
+                    $group->map(fn ($sku): array => ['id' => (string) $sku->sku_id, 'name' => (string) $sku->sku_name, 'seller_sku' => (string) ($sku->seller_sku ?? '')])->all()))->keyBy('id');
 
                 return [
                 'product_id' => $productId,
@@ -5007,6 +5022,7 @@ class OmnichannelController extends Controller
                         'seller_sku' => $sku->seller_sku ?? null,
                         'kode_variasi' => $repairPlan->get((string) $sku->sku_id)['target'] ?? '',
                         'sku_repair_blocked' => $repairPlan->get((string) $sku->sku_id)['blocked'] ?? 'SKU tidak ditemukan.',
+                        'delete_confirmation_sku' => $this->tiktokSkuVariationCode($productId, $sku),
                         'stock_qty' => (int) ($sku->stock_qty ?? 0),
                         'price' => (int) ($sku->price ?? 0),
                         'subtotal' => (int) ($sku->subtotal ?? 0),
@@ -9123,15 +9139,18 @@ class OmnichannelController extends Controller
     }
     public function bulkUpdateShopeeEmptyVariantSkus(Request $request): JsonResponse
     {
+        abort_if($request->input('account_key', self::PRIMARY_SHOPEE_ACCOUNT_KEY) !== self::PRIMARY_SHOPEE_ACCOUNT_KEY, 422, 'Pengisian template massal hanya untuk Shopee Agni. Gitashop memakai SKU sumber Agni.');
         set_time_limit(0);
         $this->ensureSkuMappingTables();
         $this->autoRefreshMarketplaceTokens();
 
+        $sourceShopId = app(\App\Services\MarketplaceStockMirrorTransport::class)->context(self::PRIMARY_SHOPEE_ACCOUNT_KEY)['shop_id'];
         $candidates = $this->shopeeMissingSkuBulkCandidates(
-            DB::table('shopee_product_model')
-                ->select('item_id', 'model_id', 'name', 'model_sku')
-                ->orderBy('item_id')
-                ->orderBy('model_id')
+            DB::table('shopee_product_model as m')->join('shopee_product as p', 'p.item_id', '=', 'm.item_id')
+                ->where('p.shop_id', $sourceShopId)
+                ->select('m.item_id', 'm.model_id', 'm.name', 'm.model_sku')
+                ->orderBy('m.item_id')
+                ->orderBy('m.model_id')
                 ->get()
         );
 
@@ -9245,7 +9264,7 @@ class OmnichannelController extends Controller
             $product = DB::table('shopee_product')->where('item_id', $itemId)->first();
             $model = DB::table('shopee_product_model')->where('item_id', $itemId)->where('model_id', $modelId)->first();
             abort_if(! $product || ! $model, 422, 'Produk atau varian tidak ditemukan. Sync produk terlebih dahulu.');
-            if ($request->boolean('repair_template')) {
+            if ($accountKey === self::PRIMARY_SHOPEE_ACCOUNT_KEY && $request->boolean('repair_template')) {
                 $siblings = DB::table('shopee_product_model')->where('item_id', $itemId)->get();
                 $sellerSku = $this->shopeeSkuRepairTarget($itemId, $model, $siblings, $data);
                 $result['seller_sku'] = $sellerSku;
@@ -9276,6 +9295,14 @@ class OmnichannelController extends Controller
                 abort_if($shopId <= 0 || $accessToken === '', 422, 'Token Shopee aktif belum lengkap.');
                 abort_if(($context['account_key'] ?? '') !== $accountKey || (string) $product->shop_id !== (string) $shopId,
                     422, 'Produk tidak dimiliki toko yang dipilih.');
+
+                if ($accountKey === 'shopee-gitacollectionbjm') {
+                    $freshTarget = app(\App\Services\MarketplaceStockMirrorGateway::class)->product($accountKey, $itemId);
+                    $sellerSku = $this->sourceSkuRepair()->target($accountKey, $itemId, $freshTarget['variants'], $modelId, $data, $request->boolean('repair_template'));
+                    $payload['model'][0]['model_sku'] = $sellerSku;
+                    $result['seller_sku'] = $sellerSku;
+                    $result['request']['body'] = $payload;
+                }
 
                 $response = $this->shopeeSignedPost($config, '/api/v2/product/update_model', $shopId, $accessToken, $payload);
                 $result['response'] = $response;
@@ -9333,15 +9360,13 @@ class OmnichannelController extends Controller
             abort_if(! is_array($detail), 422, 'Detail produk TikTok belum bisa dibaca untuk menjaga SKU lain tidak terhapus.');
             $detailPayload = is_array($detail['product'] ?? null) ? $detail['product'] : $detail;
 
-            if ($request->boolean('repair_template')) {
-                $repairSkus = array_map(fn (array $sku): array => [
-                    'sku_id' => (string) ($sku['id'] ?? $sku['sku_id'] ?? ''),
-                    'sku_name' => $this->deriveTiktokSkuName($sku),
-                    'seller_sku' => $this->extractTiktokSellerSku($sku),
-                ], $this->normalizeTiktokSkuList($detailPayload));
-                $sellerSku = app(TiktokSkuRepairPlan::class)->target($productId, $repairSkus, $skuId, $data);
-                $result['seller_sku'] = $sellerSku;
-            }
+            $repairSkus = array_map(fn (array $sku): array => [
+                'id' => (string) ($sku['id'] ?? $sku['sku_id'] ?? ''),
+                'name' => $this->deriveTiktokSkuName($sku),
+                'seller_sku' => $this->extractTiktokSellerSku($sku),
+            ], $this->normalizeTiktokSkuList($detailPayload));
+            $sellerSku = $this->sourceSkuRepair()->target($accountKey, $productId, $repairSkus, $skuId, $data, $request->boolean('repair_template'));
+            $result['seller_sku'] = $sellerSku;
 
             $skuRows = $this->buildTiktokPartialEditSkuRows(
                 $detailPayload,

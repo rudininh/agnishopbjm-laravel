@@ -2,6 +2,20 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { shopeeTemplateSku, shopeeSkuRepairRows, shopeeAllSkuRepairRows } from '../src/pages/shopeeSkuRepairState.js'
 
+test('Gita uses the verified actual Agni SKU and never its own product ID', () => {
+  const item = { item_id: '900', models: [{ model_id: '91', name: 'Americano', model_sku: 'CUSTOM-AGNI-A', kode_variasi: 'CUSTOM-AGNI-A', sku_repair_blocked: '' }] }
+  assert.equal(shopeeTemplateSku(item, item.models[0], 'shopee-gitacollectionbjm'), 'CUSTOM-AGNI-A')
+  assert.deepEqual(shopeeSkuRepairRows(item, 'shopee-gitacollectionbjm'), [])
+  item.models[0].model_sku = 'INT-900-AMERICANO'
+  assert.equal(shopeeSkuRepairRows(item, 'shopee-gitacollectionbjm')[0].target, 'CUSTOM-AGNI-A')
+})
+
+test('Gita without a source recommendation is blocked instead of receiving a generated SKU', () => {
+  const item = { item_id: '900', models: [{ model_id: '91', name: 'Biru', model_sku: 'OLD' }] }
+  assert.equal(shopeeTemplateSku(item, item.models[0], 'shopee-gitacollectionbjm'), '')
+  assert.ok(shopeeAllSkuRepairRows([item], 'shopee-gitacollectionbjm')[0].blocked)
+})
+
 test('all-product repair keeps each item identity and excludes correct SKUs across the whole catalog', () => {
   const rows = shopeeAllSkuRepairRows([
     { item_id: '42', nama: 'Product A', models: [{ model_id: '1', name: 'Americano', model_sku: 'OLD' }] },

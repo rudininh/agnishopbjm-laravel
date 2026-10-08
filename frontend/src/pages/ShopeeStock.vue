@@ -211,8 +211,9 @@
                         <small>SKU Real</small>
                         <strong>{{ shopeeRealSku(model) || 'Tidak ada SKU' }}</strong>
                         <span v-if="missingShopeeSku(model)" class="missing-sku-badge">SKU Shopee Kosong</span>
-                        <span v-else-if="shopeeRealSku(model) !== templateSku(item, model)" class="missing-sku-badge">SKU tidak sesuai template</span>
-                        <small>SKU Template</small>
+                        <span v-else-if="templateSku(item, model) && shopeeRealSku(model) !== templateSku(item, model)" class="missing-sku-badge">{{ agniDestination ? 'SKU berbeda dari Agni' : 'SKU tidak sesuai template' }}</span>
+                        <small>{{ agniDestination ? 'SKU Acuan Agni' : 'SKU Template' }}</small>
+                        <small v-if="agniDestination && model.sku_repair_blocked">{{ model.sku_repair_blocked }}</small>
                         <span class="copy-line">
                           <code>{{ templateSku(item, model) }}</code>
                           <button type="button" title="Copy SKU Template" @click="copyVariationCode(item, model)" :disabled="conflictingBusy || (!templateSku(item, model))">Copy</button>
@@ -227,8 +228,9 @@
                       <strong>Stock {{ model.stock || 0 }}</strong>
                       <span class="variant-actions">
                         <button v-if="unified" :disabled="conflictingBusy || !mirrorTargets.length || loading || repairBusy || Boolean(updatingSkuKey) || Boolean(deletingVariantKey) || Boolean(syncingItemId)" @click="emit('mirror-stock', { type: 'variant', view_account_key: accountKey, product_id: String(item.item_id), variant_id: String(model.model_id) })">Samakan Stok Varian</button>
-                        <button v-if="shopeeRealSku(model) !== templateSku(item, model)" class="update-sku-btn" @click="openSkuRepair(item, model)" :disabled="conflictingBusy || (repairBusy || Boolean(updatingSkuKey))">Perbaiki sesuai template</button>
+                        <button v-if="templateSku(item, model) && shopeeRealSku(model) !== templateSku(item, model)" class="update-sku-btn" @click="openSkuRepair(item, model)" :disabled="conflictingBusy || (repairBusy || Boolean(updatingSkuKey))">{{ agniDestination ? 'Perbaiki sesuai Agni' : 'Perbaiki sesuai template' }}</button>
                         <input
+                          v-if="!agniDestination"
                           v-model.trim="manualSkuDrafts[shopeeSkuKey(item, model)]"
                           class="manual-sku-input"
                           type="text"
@@ -278,7 +280,7 @@
       <section class="confirm-modal repair-modal" role="dialog" aria-modal="true" aria-labelledby="repair-sku-title">
         <h2 id="repair-sku-title">Perbaiki SKU Shopee</h2>
         <p>{{ repairModal.accountName }} · {{ repairModal.productName }}</p>
-        <p>Template: INT-ITEM_ID-NAMA-VARIAN. Perubahan dikirim langsung ke toko Shopee ini. Stok dan harga tetap.</p>
+        <p>{{ agniDestination ? 'SKU disalin dari varian Shopee Agni yang cocok. Perubahan dikirim ke Gitashop setelah konfirmasi.' : 'Template: INT-ITEM_ID-NAMA-VARIAN. Perubahan dikirim ke toko Shopee ini setelah konfirmasi.' }}</p>
         <div class="repair-rows">
           <div v-for="row in repairModal.rows" :key="`${row.itemId}:${row.modelId}`" class="repair-row">
             <small v-if="repairModal.allProducts">{{ row.productName }} · Item ID: {{ row.itemId }}</small>
@@ -360,7 +362,7 @@ import StockHubGitaProductCreation from '@/components/StockHubGitaProductCreatio
 import StockHubTiktokProductCreation from '@/components/StockHubTiktokProductCreation.vue'
 import { computed, onMounted, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { omnichannelService } from '@/services'
-import { shopeeTemplateSku, shopeeSkuRepairRows as skuRepairRows, shopeeAllSkuRepairRows } from './shopeeSkuRepairState'
+import { shopeeTemplateSku, shopeeSkuRepairRows, shopeeAllSkuRepairRows } from './shopeeSkuRepairState'
 import { productPresenceInfo, compareProductPresence } from './marketplaceProductPresenceState'
 import { canCreateGitaProduct, creationRowResult as gitaCreationRowResult } from './stockHubGitaProductCreationState'
 import { canCreateTiktokProduct, creationRowResult } from './stockHubTiktokProductCreationState'
@@ -399,6 +401,8 @@ function applyCreationRun(run) {
   }
 }
 const accountParams = () => props.accountKey ? { account_key: props.accountKey } : {}
+const agniDestination = computed(() => props.accountKey === 'shopee-gitacollectionbjm')
+const skuRepairRows = item => shopeeSkuRepairRows(item, props.accountKey || 'shopee-agnishopbjm')
 const cleanupBusy = ref(false)
 const repairBusy = ref(false)
 const repairModal = reactive({ open: false, rows: [], allProducts: false, accountKey: '', accountName: '', productName: '', message: '' })
@@ -406,7 +410,7 @@ const repairPending = computed(() => repairModal.rows.filter(row => !row.blocked
 let repairMounted = true
 onBeforeUnmount(() => { repairMounted = false })
 const closeSkuRepair = () => { if (!repairBusy.value) repairModal.open = false }
-const openSkuRepair = async (item = null, model = null) => {
+const openSkuRepair = async (item = null, model = null, emptyOnly = false) => {
   if (conflictingBusy.value) return
   if (repairBusy.value) return
   repairBusy.value = true
@@ -417,17 +421,23 @@ const openSkuRepair = async (item = null, model = null) => {
     message: item ? 'Mengambil data produk terbaru...' : 'Mengambil seluruh produk terbaru dari Shopee. Proses ini dapat memerlukan beberapa menit...'
   })
   try {
+    if (accountKey === 'shopee-gitacollectionbjm') {
+      const source = await omnichannelService.shopeeItems(true, { account_key: 'shopee-agnishopbjm' })
+      if (!repairMounted) return
+      if (source.data.sync?.status !== 'ok') throw new Error('Data SKU Agni belum dapat diperbarui. Periksa akun sumber Agni.')
+    }
     const response = await omnichannelService.shopeeItems(true, { account_key: accountKey, ...(item ? { item_id: item.item_id } : {}) })
     if (!repairMounted) return
     if (response.data.sync?.status !== 'ok') throw new Error(response.data.sync?.message || 'Sync produk gagal.')
     items.value = response.data.items || []
     const fresh = item ? items.value.find(candidate => String(candidate.item_id) === String(item.item_id)) : null
     if (item && !fresh) throw new Error('Produk tidak ditemukan pada toko ini.')
-    const rows = (item ? skuRepairRows(fresh) : shopeeAllSkuRepairRows(items.value))
+    const rows = (item ? skuRepairRows(fresh) : shopeeAllSkuRepairRows(items.value, accountKey))
       .filter(row => !model || row.modelId === String(model.model_id))
+      .filter(row => !emptyOnly || !row.current.trim() || row.current.trim() === '-')
     Object.assign(repairModal, { rows, message: rows.length
-      ? `${rows.length} SKU tidak sesuai template pada ${new Set(rows.map(row => row.itemId)).size} produk. Periksa preview sebelum memperbaiki.`
-      : 'Semua SKU sudah sesuai template.' })
+      ? `${rows.length} SKU perlu diperiksa pada ${new Set(rows.map(row => row.itemId)).size} produk. Periksa preview sebelum memperbaiki.`
+      : accountKey === 'shopee-gitacollectionbjm' ? 'Semua SKU sudah sama dengan Agni.' : 'Semua SKU sudah sesuai template.' })
   } catch (error) {
     repairModal.rows = []
     repairModal.message = error.response?.data?.message || error.message
@@ -623,7 +633,7 @@ const missingSkuVariantCount = computed(() => items.value.reduce(
   (count, item) => count + (item.models || []).filter(missingShopeeSku).length,
   0
 ))
-const templateSku = shopeeTemplateSku
+const templateSku = (item, model) => shopeeTemplateSku(item, model, props.accountKey || 'shopee-agnishopbjm')
 const variationCode = templateSku
 const shopeeSkuKey = (item, model) => `${item?.item_id || ''}:${model?.model_id || ''}`
 const manualSkuValue = (key) => String(manualSkuDrafts[key] || '').trim()
@@ -666,6 +676,7 @@ const copyText = async (value) => {
 }
 const copyVariationCode = (item, model) => copyText(variationCode(item, model))
 const updateMissingSku = async (item, model) => {
+  if (agniDestination.value) return openSkuRepair(item, model)
   if (conflictingBusy.value) return
   if (!canUpdateMissingSku(item, model)) return
 
@@ -850,6 +861,7 @@ const resetFilters = () => {
 
 const openBulkSkuModal = () => {
   if (loading.value || bulkSkuUpdating.value || missingSkuVariantCount.value === 0) return
+  if (agniDestination.value) return openSkuRepair(null, null, true)
   bulkSkuModal.open = true
 }
 

@@ -55,6 +55,66 @@ const source = '123', item = { item_id: source, nama: 'Tas Agni', is_live: true,
 const snapshot = (status, extra = {}) => ({ run_id: 'run-gita', source_product_id: source, status, stage: status, can_continue: status === 'preparing', can_retry: status === 'blocked', required_fields: [], context: {}, progress: {}, message: 'Ready', result: null, ...extra })
 const envelope = data => ({ data: { data } })
 
+test('Gita correct Agni SKU is not offered an ID-based repair and preview submits only source SKU', async () => {
+  const calls = [], writes = []
+  const product = { item_id: '900', nama: 'Coffee', is_live: true, models: [{ model_id: '91', name: 'Americano', stock: 2, model_sku: 'CUSTOM-AGNI-A', kode_variasi: 'CUSTOM-AGNI-A', sku_repair_blocked: '' }] }
+  const api = { shopeeItems: async (sync, params) => { calls.push(params?.account_key); return { data: { items: [structuredClone(product)], sync: { status: 'ok' } } } },
+    updateMarketplaceVariantSku: async payload => { writes.push(payload); return { data: { status: 'ok', seller_sku: 'CUSTOM-AGNI-A' } } } }
+  const view = mount(await loadComponent('../src/pages/ShopeeStock.vue', api), { unified: true, accountKey: 'shopee-gitacollectionbjm' })
+  try {
+    await tick(); view.button('Show').props.onClick(); await tick()
+    assert.equal(view.button('Perbaiki sesuai Agni'), undefined)
+    assert.ok(!view.text(view.root).includes('INT-900-AMERICANO'))
+    product.models[0].model_sku = 'INT-900-AMERICANO'
+    view.button('Perbaiki SKU Semua Produk & Varian').props.onClick(); await tick(); await tick()
+    assert.ok(calls.includes('shopee-agnishopbjm')); assert.equal(writes.length, 0)
+    assert.ok(view.text(view.root).includes('CUSTOM-AGNI-A'))
+    view.button('Perbaiki 1 SKU').props.onClick(); await tick()
+    assert.equal(writes.length, 1); assert.equal(writes[0].seller_sku, 'CUSTOM-AGNI-A'); assert.equal(writes[0].item_id, '900')
+  } finally { view.app.unmount() }
+})
+
+test('Gita bulk empty SKU action opens source preview without invoking Agni bulk generation', async () => {
+  let bulkCalls = 0; const accounts = []
+  const product = { item_id: '900', nama: 'Coffee', is_live: true, models: [{ model_id: '91', name: 'Americano', stock: 2, model_sku: '', kode_variasi: 'CUSTOM-AGNI-A', sku_repair_blocked: '' }] }
+  const api = { shopeeItems: async (sync, params) => { accounts.push(params?.account_key); return { data: { items: [product], sync: { status: 'ok' } } } }, bulkUpdateShopeeEmptyVariantSkus: async () => { bulkCalls++; return { data: {} } } }
+  const view = mount(await loadComponent('../src/pages/ShopeeStock.vue', api), { accountKey: 'shopee-gitacollectionbjm' })
+  try {
+    await tick(); view.button('Isi SKU Kosong (1)').props.onClick(); await tick(); await tick()
+    assert.ok(view.button('Perbaiki 1 SKU')); assert.equal(bulkCalls, 0); assert.ok(accounts.includes('shopee-agnishopbjm'))
+  } finally { view.app.unmount() }
+})
+
+test('TikTok repair refreshes Agni source and preserves source SKU until explicit confirmation', async () => {
+  const calls = [], writes = []
+  const product = { product_id: '900', product_name: 'Coffee', skus: [{ sku_id: '91', sku_name: 'Americano', stock_qty: 2, seller_sku: 'INT-900-AMERICANO', kode_variasi: 'CUSTOM-AGNI-A', sku_repair_blocked: '' }] }
+  const api = { tiktokItems: async () => { calls.push('tiktok'); return { data: { items: [structuredClone(product)], sync: { status: 'ok' } } } },
+    shopeeItems: async (sync, params) => { calls.push(params.account_key); return { data: { sync: { status: 'ok' } } } },
+    updateMarketplaceVariantSku: async payload => { writes.push(payload); return { data: { status: 'ok', seller_sku: 'CUSTOM-AGNI-A' } } } }
+  const view = mount(await loadComponent('../src/pages/TiktokStock.vue', api), { accountKey: 'tiktok-agnishopbjm' })
+  try {
+    await tick(); assert.ok(view.button('Perbaiki SKU Semua Produk & Varian'), view.text(view.root)); view.button('Perbaiki SKU Semua Produk & Varian').props.onClick(); await tick(); await tick()
+    assert.ok(calls.includes('shopee-agnishopbjm')); assert.ok(calls.indexOf('shopee-agnishopbjm') < calls.lastIndexOf('tiktok')); assert.equal(writes.length, 0)
+    view.button('Perbaiki 1 SKU').props.onClick(); await tick()
+    assert.equal(writes[0].seller_sku, 'CUSTOM-AGNI-A'); assert.equal(writes[0].product_id, '900')
+  } finally { view.app.unmount() }
+})
+
+test('TikTok deletion confirms current identity independently of blocked or different source repair targets', async () => {
+  const product = { product_id: '900', product_name: 'Coffee', skus: [
+    { sku_id: '91', sku_name: 'Americano', stock_qty: 2, seller_sku: 'INT-42-WRONG', kode_variasi: 'CUSTOM-AGNI-A', sku_repair_blocked: 'Mapping perlu diperiksa' },
+    { sku_id: '92', sku_name: 'Biru', stock_qty: 2, seller_sku: 'INT-42-BIRU', kode_variasi: 'INT-42-BIRU' },
+  ] }
+  const view = mount(await loadComponent('../src/pages/TiktokStock.vue', { tiktokItems: async () => ({ data: { items: [product] } }) }), { accountKey: 'tiktok-agnishopbjm' })
+  try {
+    await tick(); view.button('Show').props.onClick(); await tick()
+    const remove = view.all().find(el => el.type === 'button' && view.text(el).trim() === 'Hapus')
+    assert.equal(remove.props.disabled, false); remove.props.onClick(); await tick()
+    const input = view.all().find(el => el.type === 'input' && el.props.placeholder === 'INT-42-WRONG')
+    assert.ok(input)
+  } finally { view.app.unmount() }
+})
+
 test('both creation actions coexist and Gita busy locks conflicting actions and parent propagation', async () => {
   let finish; const busy = []
   const api = { shopeeItems: async () => ({ data: { items: [structuredClone(item)] } }), gitaProductCreationSource: async () => envelope(null),
