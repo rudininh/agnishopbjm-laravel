@@ -22,7 +22,7 @@ class StockHubTiktokProductGateway
         return $this->transport->call($account, $method, $path, $query, $body, 6, false);
     }
 
-    public function source(string $id): array
+    public function source(string $id, bool $exactSku = false): array
     {
         $ctx = $this->transport->context(self::SOURCE);
         $data = $this->call(self::SOURCE, 'GET', '/api/v2/product/get_item_base_info', ['item_id_list' => $id]);
@@ -68,7 +68,7 @@ class StockHubTiktokProductGateway
             }
             $variants[] = ['id' => $variantId, 'seller_sku' => $sku, 'name' => (string) ($r['model_name'] ?? ''), 'price' => $price, 'stock' => (int) $stock, 'attributes' => $attrs];
         }
-        $this->require(count(array_unique(array_column($variants, 'id'))) === count($variants) && count(array_unique(array_map('strtoupper', array_column($variants, 'seller_sku')))) === count($variants), 'SKU atau identitas varian sumber berulang. Perbaiki melalui alat SKU.');
+        $this->require(count(array_unique(array_column($variants, 'id'))) === count($variants) && count(array_unique($exactSku ? array_column($variants, 'seller_sku') : array_map('strtoupper', array_column($variants, 'seller_sku')))) === count($variants), 'SKU atau identitas varian sumber berulang. Perbaiki melalui alat SKU.');
         $combinations = array_map(fn ($v) => json_encode(array_column($v['attributes'], 'value_name')), $variants);
         $this->require(count($variants) === 1 || (count($tiers) > 0 && count(array_unique($combinations)) === count($variants)), 'Kombinasi variasi sumber ambigu.');
         return ['id' => $id, 'shop_id' => $ctx['shop_id'], 'title' => $p['item_name'], 'description' => $p['description'], 'main_images' => $main, 'variants' => $variants, 'weight' => $p['weight'] ?? null, 'dimension' => $p['dimension'] ?? []];

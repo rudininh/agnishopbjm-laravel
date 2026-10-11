@@ -239,19 +239,35 @@ class StockHubGitaProductMetadata
 
     private function brands(string $category, array $brand): void
     {
-        $offset = 0; $seen = []; $found = false;
+        // Shopee accepts a starting brand entry as offset. Seek the source ID
+        // first; a miss still falls back to the guarded next_offset traversal.
+        if ($brand['brand_id'] !== '0' && $this->containsBrand($this->brandPage($category, $brand['brand_id']), $brand)) { return; }
+        $offset = 0; $seen = [];
         for ($i = 0; $i < 100; $i++) {
-            $data = $this->read('product/get_brand_list', ['category_id' => $category, 'offset' => $offset, 'page_size' => 100, 'status' => 1]);
-            $this->need(is_array($data['brand_list'] ?? null) && is_bool($data['has_next_page'] ?? null) && is_bool($data['is_mandatory'] ?? null), 'Daftar merek Gita belum lengkap.');
-            if ($brand['brand_id'] === '0' && !$data['is_mandatory']) { return; }
-            foreach ($data['brand_list'] as $b) { if ((string) ($b['brand_id'] ?? '') === $brand['brand_id'] && ($brand['brand_id'] === '0' || ($b['original_brand_name'] ?? null) === $brand['original_brand_name'])) { $found = true; } }
-            if ($found) { return; }
-            if (!$data['has_next_page']) { $this->need($found, 'Merek sumber tidak tersedia pada akun Gita.'); return; }
+            $data = $this->brandPage($category, $offset);
+            if ($this->containsBrand($data, $brand)) { return; }
+            if (!$data['has_next_page']) { $this->need(false, 'Merek sumber tidak tersedia pada akun Gita.'); }
             $next = $data['next_offset'] ?? null;
             $this->need(is_int($next) && $next > $offset && !in_array($next, $seen, true) && $data['brand_list'] !== [], 'Paginasi merek Gita tidak lengkap.');
             $seen[] = $offset; $offset = $next;
         }
         throw new \DomainException('Paginasi merek Gita melampaui batas pemeriksaan.');
+    }
+
+    private function brandPage(string $category, int|string $offset): array
+    {
+        $data = $this->read('product/get_brand_list', ['category_id' => $category, 'offset' => $offset, 'page_size' => 100, 'status' => 1]);
+        $this->need(is_array($data['brand_list'] ?? null) && is_bool($data['has_next_page'] ?? null) && is_bool($data['is_mandatory'] ?? null), 'Daftar merek Gita belum lengkap.');
+        return $data;
+    }
+
+    private function containsBrand(array $data, array $brand): bool
+    {
+        if ($brand['brand_id'] === '0' && !$data['is_mandatory']) { return true; }
+        foreach ($data['brand_list'] as $b) {
+            if ((string) ($b['brand_id'] ?? '') === $brand['brand_id'] && ($brand['brand_id'] === '0' || ($b['original_brand_name'] ?? null) === $brand['original_brand_name'])) { return true; }
+        }
+        return false;
     }
 
     private function sellerLogistics(array $ch): bool { return ($ch['logistics_capability']['seller_logistics'] ?? false) === true; }

@@ -13,6 +13,20 @@ const response = value => ({ data: { data: value } })
 const crypto = { getRandomValues(bytes) { bytes.fill(7); return bytes } }
 const controller = (api, options = {}) => createTiktokProductController(api, { crypto, ...options })
 
+test('TikTok creation waits for backend coordination delays and resumes the same run', async () => {
+  const delays = [], ids = []; let starts = 0
+  const c = controller({
+    tiktokProductCreationSource: async () => response(null),
+    startTiktokProductCreation: async () => { starts++; return response(run('scanning', { next_step_after_ms: 5000 })) },
+    stepTiktokProductCreation: async id => { ids.push(id); return response(ids.length === 1 ? run('scanning', { next_step_after_ms: 1200 }) : run('success')) }
+  }, { sleep: async ms => delays.push(ms) })
+  await c.start(source)
+  assert.deepEqual(delays, [5000, 1200])
+  assert.deepEqual(ids, ['run-1', 'run-1'])
+  assert.equal(starts, 1)
+  assert.equal(c.state.run.status, 'success')
+})
+
 test('only missing TikTok rows on the unified primary account can create', () => {
   assert.equal(typeof canCreateTiktokProduct, 'function')
   const base = { unified: true, accountKey: 'shopee-agnishopbjm', item, busy: false }

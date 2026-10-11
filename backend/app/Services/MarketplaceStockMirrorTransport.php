@@ -110,6 +110,20 @@ class MarketplaceStockMirrorTransport
         return fn (array $body): array => $this->request($context, false, 'POST', '/product/202309/products', [], $body, true, 8);
     }
 
+    public function prepareTiktokProductVariantEdit(string $targetId, string $expectedShopId): \Closure
+    {
+        if (! ctype_digit($targetId)) {
+            throw new \DomainException('Identitas produk TikTok tidak valid.');
+        }
+        $context = $this->context('tiktok-agnishopbjm', false, 6);
+        if ($context['shop_id'] !== $expectedShopId) {
+            throw new \DomainException('Akun toko TikTok berubah sebelum pengiriman. Periksa akun dan coba kembali.');
+        }
+
+        // Resolve account context before the durable attempt marker; the mutation itself never retries.
+        return fn (array $body): array => $this->request($context, false, 'POST', '/product/202509/products/'.$targetId.'/partial_edit', [], $body, true, 8, true);
+    }
+
     public function uploadTiktokImage(string $bytes, string $useCase): string
     {
         try {
@@ -142,7 +156,7 @@ class MarketplaceStockMirrorTransport
         return $json['data']['uri'];
     }
 
-    private function request(array $context, bool $shopee, string $method, string $path, array $query = [], ?array $body = null, bool $creation = false, int $timeout = 30): array
+    private function request(array $context, bool $shopee, string $method, string $path, array $query = [], ?array $body = null, bool $creation = false, int $timeout = 30, bool $variantEdit = false): array
     {
         $config = $context['config'];
         $timestamp = time();
@@ -166,6 +180,7 @@ class MarketplaceStockMirrorTransport
         }
         try {
             $request = Http::timeout($timeout)->acceptJson();
+            if ($variantEdit) { $request = $request->withOptions(['allow_redirects' => false]); }
             if (! $shopee) {
                 $request = $request->withHeaders(['x-tts-access-token' => $context['token']]);
             }
@@ -174,6 +189,12 @@ class MarketplaceStockMirrorTransport
             $json = json_decode($response->body(), true, 512, JSON_BIGINT_AS_STRING);
             $errorCode = is_array($json) ? filter_var($json['code'] ?? null, FILTER_VALIDATE_INT) : false;
             $returnedIdentity = is_array($json) && (! empty($json['data']['product_id']) || ! empty($json['data']['id']));
+            if ($variantEdit) {
+                $rawCode = is_array($json) ? ($json['code'] ?? null) : null;
+                $errorCode = (is_int($rawCode) || (is_string($rawCode) && ctype_digit($rawCode))) ? filter_var($rawCode, FILTER_VALIDATE_INT) : false;
+                // Any nonempty result may contain acceptance evidence: it cannot establish a safe rejection.
+                $returnedIdentity = is_array($json) && isset($json['data']) && $json['data'] !== [];
+            }
             if (! $shopee && ! $creation && $response->successful() && $method === 'GET'
                 && preg_match('~^/product/202309/products/[0-9]+$~D', $path)
                 && ($query['return_under_review_version'] ?? null) === 'true'
@@ -181,7 +202,7 @@ class MarketplaceStockMirrorTransport
                 && (! isset($json['data']) || $json['data'] === [])) {
                 throw new StockHubTiktokReviewVersionUnavailable();
             }
-            if ($creation && $response->status() < 500 && $errorCode !== false && $errorCode !== 0 && ! $returnedIdentity) {
+            if ($creation && $response->status() < 500 && (! $variantEdit || ($response->status() >= 200 && $response->status() < 300 || $response->status() >= 400)) && $errorCode !== false && $errorCode !== 0 && ! $returnedIdentity) {
                 $message = $errorCode === 12052217
                     ? 'TikTok mewajibkan kategori V2 (kode 12052217). Coba Lagi untuk memuat dan memvalidasi kategori V2.'
                     : 'TikTok menolak produk (kode '.(int) $json['code'].'). Periksa kategori, atribut, dan data produk.';

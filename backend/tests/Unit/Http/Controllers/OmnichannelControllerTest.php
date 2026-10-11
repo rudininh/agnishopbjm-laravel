@@ -1568,7 +1568,7 @@ class OmnichannelControllerTest extends TestCase
             {
                 $this->submissions[] = compact('path', 'payload', 'context');
 
-                return ['code' => 0, 'message' => 'Success'];
+                return ['code' => 0, 'message' => 'Success', '_http_status' => 200];
             }
 
             protected function verifyBulkTiktokVariantGroup(string $productId, array $sellerSkus): array

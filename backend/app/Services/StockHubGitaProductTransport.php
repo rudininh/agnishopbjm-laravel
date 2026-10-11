@@ -69,22 +69,42 @@ class StockHubGitaProductTransport
     {
         $this->identities($identities);
         $ctx = $this->accounts->context(self::TARGET);
+        $asset = $this->download($image['url']);
+        if ($image['scene'] === 'desc' && array_key_exists('description_limits', $image)) { $asset = StockHubGitaDescriptionImage::prepare($asset, $image['description_limits']); }
+        $bytes = $asset['bytes']; $type = $asset['mime'];
         try {
-            $asset = $this->download($image['url']); $bytes = $asset['bytes']; $type = $asset['mime'];
             $cfg = $ctx['config']; $path = '/api/v2/media_space/upload_image'; $timestamp = time();
             $q = ['partner_id' => $cfg['partner_id'], 'timestamp' => $timestamp, 'sign' => hash_hmac('sha256', $cfg['partner_id'].$path.$timestamp, $cfg['partner_key'])];
             $r = Http::timeout(12)->retry(3, 250, $this->transient(...), throw: false)->attach('image', $bytes, $type === 'image/png' ? 'product.png' : 'product.jpg')->post(rtrim($cfg['host'], '/').$path.'?'.http_build_query($q), ['scene' => $image['scene']]);
             $j = $r->json();
-            if (!$r->successful() || ($j['error'] ?? null) !== '') { throw new \DomainException(); }
-            $id = $j['response']['image_info']['image_id'] ?? null;
-            if ($id === null) {
-                $list = $j['response']['image_info_list'] ?? null;
-                if (!is_array($list) || count($list) !== 1 || (string) ($list[0]['id'] ?? '') !== '0' || ($list[0]['error'] ?? null) !== '') { throw new \DomainException(); }
-                $id = $list[0]['image_info']['image_id'] ?? null;
-            }
-            if (!is_string($id) || $id === '') { throw new \DomainException(); }
-            return $id;
-        } catch (\Throwable) { throw new \DomainException('Transfer gambar Shopee gagal. Periksa gambar dan koneksi lalu coba kembali.'); }
+        } catch (\Throwable) { throw new \DomainException('Unggah gambar ke Shopee gagal. Periksa koneksi lalu coba kembali.'); }
+        if (!$r->successful() || (is_array($j) && is_string($j['error'] ?? null) && $j['error'] !== '')) { throw $this->imageRejection(is_array($j) ? $j : [], $r->status()); }
+        if (!is_array($j) || ($j['error'] ?? null) !== '') { throw new \DomainException('Respons unggahan gambar Shopee belum lengkap.'); }
+        $id = $j['response']['image_info']['image_id'] ?? null;
+        if ($id === null) {
+            $list = $j['response']['image_info_list'] ?? null;
+            if (!is_array($list) || count($list) !== 1 || (string) ($list[0]['id'] ?? '') !== '0') { throw new \DomainException('Respons unggahan gambar Shopee belum lengkap.'); }
+            if (is_string($list[0]['error'] ?? null) && $list[0]['error'] !== '') { throw $this->imageRejection($list[0], $r->status()); }
+            if (($list[0]['error'] ?? null) !== '') { throw new \DomainException('Respons unggahan gambar Shopee belum lengkap.'); }
+            $id = $list[0]['image_info']['image_id'] ?? null;
+        }
+        if (!is_string($id) || $id === '') { throw new \DomainException('Respons unggahan gambar Shopee belum lengkap.'); }
+        return $id;
+    }
+
+    /** Expose only a bounded code and fixed guidance, never raw response text. */
+    private function imageRejection(array $response, int $httpStatus): \DomainException
+    {
+        $error = $response['error'] ?? null;
+        $code = is_string($error) && strlen($error) <= 80 && preg_match('/^(?:[0-9]{1,10}|[a-z][a-z0-9]*(?:[._][a-z0-9]+)+)$/D', $error) ? $error : null;
+        $text = is_string($response['message'] ?? null) ? strtolower($response['message']) : '';
+        $guidance = match (true) {
+            (bool) preg_match('/\b(?:whitelist|permission|authorized|authorization)\b/', $text) => 'Periksa izin akun untuk jenis gambar ini.',
+            (bool) preg_match('/\b(?:height|width|dimension|dimensions|ratio|resolution)\b/', $text) => 'Ukuran atau rasio gambar perlu diperiksa sesuai aturan Shopee.',
+            (bool) preg_match('/\b(?:format|jpeg|jpg|png)\b/', $text) => 'Format gambar perlu diperiksa; gunakan JPG, JPEG, atau PNG.',
+            default => 'Periksa gambar dan koneksi lalu coba kembali.',
+        };
+        return new \DomainException('Shopee menolak unggahan gambar'.($httpStatus >= 400 ? ' (HTTP '.$httpStatus.')' : '').($code !== null ? ' (kode '.$code.')' : '').'. '.$guidance);
     }
 
     /** Read-only asset transfer shared by upload preparation and safe diagnostics. */

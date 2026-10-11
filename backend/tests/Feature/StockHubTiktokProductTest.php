@@ -29,6 +29,7 @@ class StockHubTiktokProductTest extends TestCase
     private array $transferProgress = [];
     private ?string $failedReadPath = null;
     private int $failedReadAttempts = 0;
+    private ?array $remoteLeaseResponse = null;
     private string $base = '/api/marketplace/tiktok-product-creation';
 
     protected function setUp(): void
@@ -50,6 +51,7 @@ class StockHubTiktokProductTest extends TestCase
         DB::table('marketplace_listings')->insert(['stock_master_id' => 1, 'account_key' => 'shopee-agnishopbjm', 'channel' => 'shopee', 'remote_product_id' => '10', 'remote_variant_id' => '101', 'remote_identity_hash' => hash('sha256', 'source'), 'seller_sku' => 'INT-10-GREEN']);
         Http::fake(function ($r) {
             $path = parse_url($r->url(), PHP_URL_PATH);
+            if ($path === '/api/runtime/marketplace-operation/acquire' && $this->remoteLeaseResponse !== null) { return Http::response(['data' => $this->remoteLeaseResponse]); }
             if ($path === $this->failedReadPath) {
                 $this->failedReadAttempts++;
                 return Http::response(['code' => 500, 'message' => 'secret signed URL'], 502);
@@ -1012,15 +1014,121 @@ class StockHubTiktokProductTest extends TestCase
 
     public function test_busy_guard_and_marketplace_lease_prevent_mutation(): void
     {
+        $this->freezeTime();
         $run = $this->start();
         DB::table('stock_hub_tiktok_product_guards')->update(['owner' => (string) Str::uuid(), 'expires_at' => now()->addMinute()]);
         $this->postJson($this->base.'/runs/'.$run['run_id'].'/step')->assertJsonPath('data.status', 'preparing');
         Http::assertNothingSent();
         DB::table('stock_hub_tiktok_product_guards')->update(['owner' => null]);
         $lock = Cache::lock('stock-catalog-mutation', 60); $this->assertTrue($lock->get());
-        try { $this->postJson($this->base.'/runs/'.$run['run_id'].'/step')->assertJsonPath('data.status', 'blocked'); }
+        try { $this->postJson($this->base.'/runs/'.$run['run_id'].'/step')->assertJsonPath('data.status', 'preparing')->assertJsonPath('data.next_step_after_ms', 5000); }
         finally { $lock->release(); }
         Http::assertNothingSent();
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('busyMarketplaceCoordination')]
+    public function test_busy_marketplace_waits_and_resumes_same_catalog_progress(string $kind): void
+    {
+        $this->freezeTime();
+        $run = $this->start();
+        for ($i = 0; $i < 10 && $run['progress']['scanned_products'] < 1; $i++) { $run = $this->postJson($this->base.'/runs/'.$run['run_id'].'/step')->assertOk()->json('data'); }
+        $this->assertSame('scanning', $run['status']);
+        $this->assertSame(1, $run['progress']['scanned_products']);
+        $before = json_decode(DB::table('stock_hub_tiktok_product_runs')->where('id', $run['run_id'])->value('state'), true);
+        $release = static function () {};
+        if ($kind === 'cache') {
+            $lock = Cache::lock('stock-catalog-mutation', 60); $this->assertTrue($lock->get());
+            $release = fn () => $lock->release();
+        } elseif ($kind === 'local') {
+            $leases = $this->app->make(\App\Services\MarketplaceOperationLeaseService::class);
+            $lease = $leases->acquire('stb_marketplace_sync', 60); $this->assertTrue($lease['acquired']);
+            $release = fn () => $leases->release($lease['token']);
+        } else {
+            config(['shopee_mass_upload.stb_control_url' => 'https://stb.test/api/runtime', 'shopee_mass_upload.stb_control_token' => 'test-only']);
+            $this->remoteLeaseResponse = ['acquired' => false, 'operation' => 'stb_marketplace_sync', 'token' => null];
+            $release = fn () => config(['shopee_mass_upload.stb_control_url' => '']);
+        }
+        try {
+            $waiting = $this->postJson($this->base.'/runs/'.$run['run_id'].'/step')->assertOk()->json('data');
+            $this->assertSame('scanning', $waiting['status']);
+            $this->assertTrue($waiting['can_continue']); $this->assertFalse($waiting['can_retry']);
+            $this->assertSame(5000, $waiting['next_step_after_ms']);
+            $this->assertStringContainsString('Menunggu', $waiting['message']);
+            $saved = json_decode(DB::table('stock_hub_tiktok_product_runs')->where('id', $run['run_id'])->value('state'), true);
+            $this->assertSame($before['scan'], $saved['scan']);
+            $this->assertSame($before['progress'], $saved['progress']);
+            $this->assertSame($before['source'], $saved['source']);
+            $calls = count(Http::recorded());
+            $this->postJson($this->base.'/runs/'.$run['run_id'].'/step')->assertOk()->assertJsonPath('data.status', 'scanning');
+            $this->assertSame($calls, count(Http::recorded()));
+            $this->assertSame(0, $this->creates);
+        } finally { $release(); }
+        $this->travel(6)->seconds();
+        $done = $this->finish($waiting);
+        $this->assertSame('success', $done['status']);
+        $this->assertSame($run['run_id'], $done['run_id']);
+        $this->assertSame(1, $this->creates);
+        $this->assertSame(19, DB::table('stock_master')->value('stock'));
+    }
+
+    public static function busyMarketplaceCoordination(): array
+    {
+        return ['catalog mutex' => ['cache'], 'local sync' => ['local'], 'remote STB sync' => ['remote']];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('invalidMarketplaceCoordination')]
+    public function test_invalid_remote_coordination_still_blocks_without_waiting(array $response): void
+    {
+        config(['shopee_mass_upload.stb_control_url' => 'https://stb.test/api/runtime', 'shopee_mass_upload.stb_control_token' => 'test-only']);
+        $this->remoteLeaseResponse = $response;
+        $run = $this->start();
+        $run = $this->postJson($this->base.'/runs/'.$run['run_id'].'/step')->assertOk()->json('data');
+        $this->assertSame('blocked', $run['status']);
+        $this->assertFalse($run['can_continue']);
+        $this->assertSame(0, $run['next_step_after_ms']);
+        $this->assertSame(0, $this->creates);
+        $this->assertFalse($this->app->make(\App\Services\MarketplaceOperationLeaseService::class)->status()['active']);
+        $this->assertStringNotContainsString('secret', json_encode($run));
+        Http::assertNotSent(fn ($r) => str_ends_with(parse_url($r->url(), PHP_URL_PATH), '/release'));
+    }
+
+    public static function invalidMarketplaceCoordination(): array
+    {
+        return [
+            'string false' => [['acquired' => 'false', 'operation' => 'sync', 'token' => null]],
+            'missing operation' => [['acquired' => false, 'token' => null]],
+            'missing token evidence' => [['acquired' => false, 'operation' => 'sync']],
+            'contradictory token' => [['acquired' => false, 'operation' => 'sync', 'token' => 'secret']],
+            'invalid acceptance' => [['acquired' => true, 'token' => null]],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('busyReadbackStatuses')]
+    public function test_busy_coordination_during_readback_never_replays_creation(string $status): void
+    {
+        $this->freezeTime(); $run = $this->start();
+        for ($i = 0; $i < 25 && $run['status'] !== 'verifying'; $i++) { $run = $this->postJson($this->base.'/runs/'.$run['run_id'].'/step')->assertOk()->json('data'); }
+        $this->assertSame('verifying', $run['status']); $this->assertSame(1, $this->creates);
+        DB::table('stock_hub_tiktok_product_runs')->where('id', $run['run_id'])->update(['status' => $status]);
+        $parent = $run['remote_product_id'];
+        $lock = Cache::lock('stock-catalog-mutation', 60); $this->assertTrue($lock->get());
+        try { $waiting = $this->postJson($this->base.'/runs/'.$run['run_id'].'/step')->assertOk()->json('data'); }
+        finally { $lock->release(); }
+        $this->assertSame($status, $waiting['status']); $this->assertSame($parent, $waiting['remote_product_id']);
+        if ($status === 'submitted_unverified') {
+            $this->assertFalse($waiting['can_continue']);
+            $this->assertStringContainsString('Periksa Status', $waiting['message']);
+            $this->assertStringNotContainsString('otomatis', $waiting['message']);
+        }
+        $this->assertSame(1, $this->creates); $this->travel(6)->seconds();
+        $done = $this->postJson($this->base.'/runs/'.$run['run_id'].'/step')->assertOk()->json('data');
+        $this->assertSame('success', $done['status']); $this->assertSame($parent, $done['remote_product_id']);
+        $this->assertSame(1, $this->creates);
+    }
+
+    public static function busyReadbackStatuses(): array
+    {
+        return ['automatic verification' => ['verifying'], 'manual known-ID verification' => ['submitted_unverified']];
     }
 
     public function test_request_identity_account_controls_and_category_response(): void

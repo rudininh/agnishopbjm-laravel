@@ -65,7 +65,13 @@ class StockHubGitaProductService
             elseif ($row->status === 'scanning') { $this->scan($row, $state); }
             elseif ($row->status === 'uploading') {
                 $i = $state['progress']['uploaded_images'];
-                if ($i < count($state['images'])) { $state['images'][$i]['image_id'] = $this->gateway->upload($state['images'][$i], $state['identities']); $state['progress']['uploaded_images']++; }
+                if ($i < count($state['images'])) {
+                    $image = $state['images'][$i];
+                    if ($image['scene'] === 'desc' && array_key_exists('extended_description_limit', $state['limits'] ?? [])) { $image['description_limits'] = $state['limits']['extended_description_limit']; }
+                    try { $state['images'][$i]['image_id'] = $this->gateway->upload($image, $state['identities']); }
+                    catch (\DomainException $e) { throw new \DomainException('Gambar ke-'.($i + 1).': '.$e->getMessage()); }
+                    $state['progress']['uploaded_images']++;
+                }
                 $done = $state['progress']['uploaded_images'] === count($state['images']);
                 if ($done) { $state['payload'] = $this->gateway->payload($state['source'], $state['context'], $state['images'], $state['logistics']); }
                 $this->save($id, $done ? 'submitting' : 'uploading', $state, $done ? 'Memeriksa sumber sebelum membuat induk Gita.' : 'Mengunggah gambar ke Gita.');

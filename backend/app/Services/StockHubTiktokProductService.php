@@ -72,7 +72,17 @@ class StockHubTiktokProductService
                 $this->save($id, 'submitted_unverified', $state, 'Terkirim, belum terverifikasi. Jangan membuat ulang produk; periksa Seller Center.');
                 return $this->show($id);
             }
-            $this->lease->acquire();
+            if ($this->coordinationDelay($state) > 0) { return $this->show($id); }
+            unset($state['coordination_retry_at']);
+            try { $this->lease->acquire(); }
+            catch (MarketplaceOperationBusy) {
+                $state['coordination_retry_at'] = now()->addSeconds(5)->getTimestampMs();
+                $message = in_array($row->status, self::RUNNING, true)
+                    ? 'Menunggu sinkronisasi atau proses marketplace lain selesai. Proses akan dilanjutkan otomatis; progres tetap tersimpan.'
+                    : 'Menunggu sinkronisasi atau proses marketplace lain selesai. Gunakan Periksa Status kembali setelah selesai; produk tidak akan dikirim ulang.';
+                $this->save($id, $row->status, $state, $message);
+                return $this->show($id);
+            }
             if (isset($state['target_shop_id'])) {
                 try {
                     $this->gateway->assertTargetShop($state['target_shop_id']);
@@ -274,6 +284,12 @@ class StockHubTiktokProductService
             'required_fields' => $s['required_fields'] ?? [],
             'context' => $s['context'] ?? [],
             'result' => $s['result'] ?? null,
+            'next_step_after_ms' => $this->coordinationDelay($s),
         ];
+    }
+
+    private function coordinationDelay(array $state): int
+    {
+        return max(0, min(5000, (int) ($state['coordination_retry_at'] ?? 0) - now()->getTimestampMs()));
     }
 }

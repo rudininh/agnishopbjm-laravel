@@ -24,6 +24,24 @@ use App\Http\Middleware\StockCatalogMutationLock;
 use App\Http\Controllers\MarketplaceStockMirrorController;
 use App\Http\Controllers\StockHubTiktokProductController;
 use App\Http\Controllers\StockHubGitaProductController;
+use App\Http\Controllers\StockHubTiktokVariantController;
+use App\Http\Controllers\StockHubTiktokVariantBatchController;
+
+Route::prefix('stock-hub/tiktok-variant-batches')->group(function (): void {
+    Route::post('runs', [StockHubTiktokVariantBatchController::class, 'start']);
+    Route::get('active', [StockHubTiktokVariantBatchController::class, 'active']);
+    Route::get('runs/{runId}', [StockHubTiktokVariantBatchController::class, 'show'])->whereUuid('runId');
+    Route::post('runs/{runId}/step', [StockHubTiktokVariantBatchController::class, 'step'])->whereUuid('runId');
+    Route::post('runs/{runId}/pause', [StockHubTiktokVariantBatchController::class, 'pause'])->whereUuid('runId');
+    Route::post('runs/{runId}/resume', [StockHubTiktokVariantBatchController::class, 'resume'])->whereUuid('runId');
+});
+
+Route::prefix('stock-hub/tiktok-variants')->group(function (): void {
+    Route::post('runs', [StockHubTiktokVariantController::class, 'start']);
+    Route::get('source/{productId}', [StockHubTiktokVariantController::class, 'source'])->whereNumber('productId');
+    Route::get('runs/{runId}', [StockHubTiktokVariantController::class, 'show'])->whereUuid('runId');
+    Route::post('runs/{runId}/step', [StockHubTiktokVariantController::class, 'step'])->whereUuid('runId');
+});
 
 Route::prefix('marketplace/tiktok-product-creation')->group(function (): void {
     Route::get('categories', [StockHubTiktokProductController::class, 'categories']);

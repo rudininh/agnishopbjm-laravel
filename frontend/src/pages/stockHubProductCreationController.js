@@ -3,8 +3,10 @@ import { stockMirrorRequestKey } from './marketplaceStockMirrorState.js'
 export function createProductCreationController(api, config, options = {}) {
   const running = new Set(config.runningStatuses)
   const checkable = new Set(config.checkableStatuses || ['submitted_unverified'])
+  const retryStatuses = new Set(config.retryStatuses || ['blocked', 'rejected'])
+  const newRunStatuses = new Set(config.newRunStatuses || [])
   const continues = run => Boolean(run?.run_id && run.can_continue && running.has(run.status))
-  const retryable = run => Boolean(run?.can_retry && ['blocked', 'rejected'].includes(run.status))
+  const retryable = run => Boolean(run?.can_retry && retryStatuses.has(run.status))
   const storageKey = config.storageKey
   const sleep = options.sleep || (ms => new Promise(resolve => setTimeout(resolve, ms)))
   const state = { sourceId: '', run: null, pendingKey: '', busy: false, paused: false, error: '' }
@@ -94,7 +96,8 @@ export function createProductCreationController(api, config, options = {}) {
       select(sourceId)
       const saved = await lookup()
       if (!alive) return
-      if (saved) await follow()
+      if (saved && !state.pendingKey && retryable(saved) && newRunStatuses.has(saved.status)) await startRequest()
+      else if (saved) await follow()
       else if (state.pendingKey) { state.paused = true; notify() }
       else await startRequest()
     }) },

@@ -33,6 +33,9 @@ class StockHubGitaProductTest extends TestCase
     private ?array $parentRejection = null;
     private array $itemLimitExtras = [];
     private array $targetParentExtras = [];
+    private ?array $imageRejection = null;
+    private ?string $chartBytes = null;
+    private ?array $uploadedChart = null;
 
     protected function setUp(): void
     {
@@ -61,13 +64,21 @@ class StockHubGitaProductTest extends TestCase
                     if (is_int($failure)) { return Http::response('error', $failure, ['Content-Type' => 'image/jpeg']); }
                     if ($failure === 'html') { return Http::response('<html>', 200, ['Content-Type' => 'text/html']); }
                 }
+                if ($this->chartBytes !== null && parse_url($r->url(), PHP_URL_PATH) === '/chart.jpg') { return Http::response($this->chartBytes, 200, ['Content-Type' => 'image/png']); }
                 return Http::response('image-bytes', $this->mode === 'image' ? 404 : 200, ['Content-Type' => 'image/jpeg']);
             }
             if ($path === '/api/v2/media_space/upload_image') {
                 $this->assertSame(['partner_id', 'timestamp', 'sign'], array_keys($q));
                 $this->assertSame('122', (string) $q['partner_id']);
                 $this->assertSame(hash_hmac('sha256', '122'.$path.$q['timestamp'], 'test-key-22'), $q['sign']);
-                $this->assertTrue($r->hasFile('image', 'image-bytes', 'product.jpg'));
+                $scene = array_values(array_filter($r->data(), fn ($part) => is_array($part) && ($part['name'] ?? null) === 'scene'))[0]['contents'] ?? null;
+                if ($this->chartBytes !== null && $scene === 'desc') {
+                    $part = array_values(array_filter($r->data(), fn ($part) => is_array($part) && ($part['name'] ?? null) === 'image'))[0];
+                    $info = getimagesizefromstring($part['contents']);
+                    $this->uploadedChart = [$info[0], $info[1], $part['filename'], $scene];
+                    if ($info[0] < 700 || $info[0] / $info[1] < 0.5) { return Http::response(['error' => 'product.error_param', 'message' => 'Image width and ratio invalid']); }
+                } else { $this->assertTrue($r->hasFile('image', 'image-bytes', 'product.jpg')); }
+                if ($this->imageRejection !== null) { return Http::response($this->imageRejection); }
                 if ($this->mode === 'upload_missing') { return Http::response(['error' => '', 'response' => []]); }
                 if ($this->mode === 'upload_list') { return Http::response(['error' => '', 'response' => ['image_info_list' => [['id' => 0, 'error' => '', 'image_info' => ['image_id' => 'uploaded-'.++$this->uploads]]]]]); }
                 return Http::response(['error' => '', 'response' => ['image_info' => ['image_id' => 'uploaded-'.++$this->uploads]]]);
@@ -95,9 +106,14 @@ class StockHubGitaProductTest extends TestCase
                 $data = ['brand_list' => $this->mode === 'no_brand' ? [['brand_id' => 0, 'original_brand_name' => 'NoBrand']] : [], 'has_next_page' => false, 'is_mandatory' => in_array($this->mode, ['brand','no_brand'], true)];
                 if ($this->mode === 'positive_brand_found') {
                     if ((int) $q['offset'] >= 200) { return Http::response(['error' => 'unavailable'], 503); }
-                    $data = ['brand_list' => (int) $q['offset'] === 0 ? [['brand_id' => 0, 'original_brand_name' => 'No Brand']] : [['brand_id' => 7, 'original_brand_name' => 'Known Brand']], 'is_mandatory' => true, 'has_next_page' => true, 'next_offset' => (int) $q['offset'] + 100];
+                    $data = ['brand_list' => (int) $q['offset'] < 100 ? [['brand_id' => 0, 'original_brand_name' => 'No Brand']] : [['brand_id' => 7, 'original_brand_name' => 'Known Brand']], 'is_mandatory' => true, 'has_next_page' => true, 'next_offset' => (int) $q['offset'] + 100];
                 }
                 if ($this->mode === 'positive_brand_mismatch') { $data['brand_list'] = [['brand_id' => 7, 'original_brand_name' => 'Other Brand'], ['brand_id' => 8, 'original_brand_name' => 'Known Brand']]; }
+                if ($this->mode === 'positive_brand_deep') {
+                    $offset = (int) $q['offset'];
+                    $data = ['brand_list' => [['brand_id' => $offset === 3800000 ? 3800000 : $offset + 1, 'original_brand_name' => $offset === 3800000 ? 'Source Brand' : 'Other Brand']], 'is_mandatory' => true, 'has_next_page' => true, 'next_offset' => $offset + 100];
+                }
+                if ($this->mode === 'positive_brand_malformed') { $data = ['brand_list' => [['brand_id' => 7, 'original_brand_name' => 'Known Brand']], 'has_next_page' => 'false', 'is_mandatory' => true]; }
             } elseif ($path === '/api/v2/logistics/get_channel_list') {
                 $data = ['logistics_channel_list' => [['logistics_channel_id' => 8003, 'logistics_channel_name' => 'Regular', 'enabled' => $this->mode !== 'logistics', 'fee_type' => 'FIXED_DEFAULT', 'seller_logistic_has_configuration' => true]]];
                 if ($this->mode === 'canonical') { $data['logistics_channel_list'][] = ['logistics_channel_id' => 8005, 'logistics_channel_name' => 'Express', 'enabled' => true, 'fee_type' => 'SIZE_INPUT']; }
@@ -385,6 +401,28 @@ class StockHubGitaProductTest extends TestCase
         $this->assertTrue($r['can_retry']);
         $this->assertSame([], $this->writes);
         $this->assertSame([], $this->downloadRequests);
+    }
+
+    public function test_source_brand_beyond_initial_catalog_pages_can_be_copied(): void
+    {
+        $this->mode = 'positive_brand_deep';
+        $this->sourceExtras = ['brand' => ['brand_id' => 3800000, 'original_brand_name' => 'Source Brand']];
+        $r = $this->finish($this->start());
+        $this->assertSame('success', $r['status'], json_encode($r));
+        $this->assertTrue($r['result']['published']);
+        $this->assertSame(['brand_id' => 3800000, 'original_brand_name' => 'Source Brand'], $this->writes[0][1]['brand']);
+        $this->assertSame(19, DB::table('stock_master')->value('stock'));
+    }
+
+    public function test_direct_brand_match_cannot_bypass_incomplete_response_validation(): void
+    {
+        $this->mode = 'positive_brand_malformed';
+        $this->sourceExtras = ['brand' => ['brand_id' => 7, 'original_brand_name' => 'Known Brand']];
+        $r = $this->finish($this->start());
+        $this->assertSame('blocked', $r['status']);
+        $this->assertSame([], $this->writes);
+        $this->assertSame([], $this->downloadRequests);
+        $this->assertSame(19, DB::table('stock_master')->value('stock'));
     }
 
     #[\PHPUnit\Framework\Attributes\DataProvider('unsupportedShopeeFulfillment')]
@@ -1025,6 +1063,51 @@ class StockHubGitaProductTest extends TestCase
             $this->assertSame('blocked', $r['status']); $this->assertSame([], $this->writes);
             $this->assertSame(0, $r['progress']['uploaded_images']);
         }
+    }
+
+    public function test_image_failure_identifies_source_download_and_image_number(): void
+    {
+        $this->mode = 'image'; $r = $this->finish($this->start());
+        $this->assertSame('blocked', $r['status']);
+        $this->assertStringContainsString('Download gambar Shopee gagal', $r['message']);
+        $this->assertStringContainsString('Gambar ke-1', $r['message']);
+        $this->assertSame([], $this->writes);
+    }
+
+    public function test_size_chart_is_padded_using_target_rules_before_upload(): void
+    {
+        $image = imagecreatetruecolor(543, 1176);
+        ob_start(); imagepng($image); $this->chartBytes = ob_get_clean(); imagedestroy($image);
+        $this->itemLimitExtras = ['extended_description_limit' => ['description_image_width_min' => 700, 'description_image_height_min' => 32, 'description_image_aspect_ratio_min' => 0.5, 'description_image_aspect_ratio_max' => 32]];
+        $r = $this->finish($this->start());
+        $this->assertSame('success', $r['status'], json_encode([$r, $this->boundaryErrors]));
+        $this->assertSame([700, 1176, 'product.png', 'desc'], $this->uploadedChart);
+        $this->assertArrayHasKey('size_chart_info', $this->writes[0][1]);
+        $this->assertSame(19, DB::table('stock_master')->value('stock'));
+    }
+
+    public function test_upload_rejection_reports_only_safe_code_and_fixed_guidance(): void
+    {
+        $this->imageRejection = ['error' => 'media.error_param', 'message' => 'Image height invalid SECRET https://secret.test/?access_token=secret'];
+        $r = $this->finish($this->start());
+        $this->assertSame('blocked', $r['status']);
+        $this->assertStringContainsString('media.error_param', $r['message']);
+        $this->assertStringContainsString('Ukuran atau rasio gambar', $r['message']);
+        $this->assertStringContainsString('Gambar ke-1', $r['message']);
+        $this->assertStringNotContainsString('SECRET', $r['message']);
+        $this->assertStringNotContainsString('access_token', $r['message']);
+        $this->assertSame([], $this->writes);
+    }
+
+    public function test_per_image_upload_rejection_is_not_treated_as_success(): void
+    {
+        $this->imageRejection = ['error' => '', 'response' => ['image_info_list' => [['id' => 0, 'error' => 'media.error_format', 'message' => 'Unsupported image format SECRET', 'image_info' => ['image_id' => 'not-accepted']]]]];
+        $r = $this->finish($this->start());
+        $this->assertSame('blocked', $r['status']);
+        $this->assertStringContainsString('media.error_format', $r['message']);
+        $this->assertStringNotContainsString('SECRET', $r['message']);
+        $this->assertSame(0, $r['progress']['uploaded_images']);
+        $this->assertSame([], $this->writes);
     }
 
     public function test_shared_catalog_lease_refusal_blocks_before_remote_reads(): void

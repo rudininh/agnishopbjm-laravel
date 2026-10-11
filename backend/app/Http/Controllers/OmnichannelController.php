@@ -2801,6 +2801,18 @@ class OmnichannelController extends Controller
             ])->all())
             : [];
 
+        $destinationVariantCoverage = $this->requestedMarketplaceAccountKey === self::PRIMARY_SHOPEE_ACCOUNT_KEY
+            ? app(\App\Services\MarketplaceVariantCoverageService::class)->forProducts($products->map(fn ($item) => [
+                'item_id' => (string) $item->item_id,
+                'shop_id' => (string) $item->shop_id,
+                'models' => ($models[$item->item_id] ?? collect())->map(fn ($model) => [
+                    'model_id' => (string) $model->model_id,
+                    'model_sku' => $model->model_sku ?? null,
+                    'name' => $model->name,
+                ])->all(),
+            ])->all())
+            : [];
+
         $productImages = DB::table('shopee_product_image')
             ->select('item_id', 'image_url', 'created_at', 'id')
             ->whereNotNull('image_url')
@@ -2841,6 +2853,7 @@ class OmnichannelController extends Controller
                 'shop_id' => $item->shop_id ? (string) $item->shop_id : null,
                 'shop_name' => $shopNames[(string) $item->shop_id] ?? 'Shopee',
                 'destination_presence' => $destinationPresence[(string) $item->item_id] ?? null,
+                'destination_variant_coverage' => $destinationVariantCoverage[(string) $item->item_id] ?? null,
                 'image_url' => $productImages[$item->item_id] ?? null,
                 'nama' => $item->name,
                 'sku' => (string) $item->item_id,
@@ -8951,24 +8964,37 @@ class OmnichannelController extends Controller
                 'uploaded_image_uri' => $prepared['uploaded_image_uri'],
             ], $batchVariants)
         );
+        $legacyAttempt = \App\Services\StockHubTiktokVariantInterlock::beginLegacy($productId, array_column($batchVariants, 'seller_sku'), $submitDetail);
         $partialResponse = $this->submitTiktokBulkPartialEditPayload($partialEdit['path'], $partialEdit['body'], [
             'access_token' => $accessToken,
             'shop_cipher' => (string) ($shop->cipher ?? $shop->shop_cipher ?? ''),
             'shop_id' => (string) ($shop->shop_id ?? $shop->id ?? ''),
         ]);
         $mutation = [
-            'ok' => (int) ($partialResponse['code'] ?? -1) === 0,
+            'ok' => in_array($partialResponse['code'] ?? null, [0, '0'], true)
+                && is_int($partialResponse['_http_status'] ?? null) && $partialResponse['_http_status'] >= 200 && $partialResponse['_http_status'] < 300,
             'message' => (string) ($partialResponse['message'] ?? 'TikTok menolak update varian batch.'),
             'request' => ['method' => 'POST', 'path' => $partialEdit['path'], 'body' => $partialEdit['body']],
             'response' => $partialResponse,
         ];
 
-        return [
-            'mutation' => $mutation,
-            'verification' => $mutation['ok']
-                ? $this->verifyBulkTiktokVariantGroup($productId, array_column($batchVariants, 'seller_sku'))
-                : null,
-        ];
+        $verification = null;
+        if ($mutation['ok']) {
+            \App\Services\StockHubTiktokVariantInterlock::finishLegacy($legacyAttempt, 'accepted');
+            $verification = $this->verifyBulkTiktokVariantGroup($productId, array_column($batchVariants, 'seller_sku'));
+            if (($verification['sync']['status'] ?? null) === 'ok'
+                && ! array_diff(array_column($batchVariants, 'seller_sku'), array_keys($verification['found_seller_skus'] ?? []))) {
+                \App\Services\StockHubTiktokVariantInterlock::finishLegacy($legacyAttempt, 'resolved');
+            }
+        } elseif (is_int($partialResponse['_http_status'] ?? null)
+            && (($partialResponse['_http_status'] >= 200 && $partialResponse['_http_status'] < 300)
+                || ($partialResponse['_http_status'] >= 400 && $partialResponse['_http_status'] < 500))
+            && (is_int($partialResponse['code'] ?? null) || is_string($partialResponse['code'] ?? null))
+            && preg_match('/^[1-9][0-9]{0,9}$/D', (string) $partialResponse['code'])
+            && (! isset($partialResponse['data']) || $partialResponse['data'] === [])) {
+            \App\Services\StockHubTiktokVariantInterlock::finishLegacy($legacyAttempt, 'rejected');
+        }
+        return ['mutation' => $mutation, 'verification' => $verification];
     }
 
     private function submitBulkTiktokMissingVariantGroup(array $group, array $settings, object $shop, string $accessToken): array
@@ -8976,6 +9002,11 @@ class OmnichannelController extends Controller
         $productId = trim((string) ($group['tiktok_product_id'] ?? ''));
         $shopeeItemId = trim((string) ($group['shopee_item_id'] ?? ''));
         $result = ['product_id' => $productId, 'product_name' => $group['product_name'] ?? '', 'updated' => 0, 'unverified' => 0, 'skipped' => 0, 'failed' => 0, 'variants' => []];
+        try { \App\Services\StockHubTiktokVariantInterlock::assertLegacyAvailable($productId); }
+        catch (\DomainException $e) {
+            $this->appendBulkTiktokVariantOutcomes($result, $group['variants'], 'skipped', null, $e->getMessage());
+            return $this->completeBulkTiktokVariantGroupResult($result);
+        }
         if ($productId === '' || ! ctype_digit($shopeeItemId)) {
             $this->appendBulkTiktokVariantOutcomes($result, $group['variants'], 'skipped', null, 'Koneksi produk TikTok atau Item ID Shopee belum lengkap.');
 

@@ -20,9 +20,10 @@ class MarketplaceStockMirrorLease
             $this->catalogLock = Cache::lock('stock-catalog-mutation', 900);
             if (! $this->catalogLock->get()) {
                 $this->catalogLock = null;
-                throw new \RuntimeException();
+                throw new MarketplaceOperationBusy();
             }
             $local = $this->leases->acquire('stock_mirror', 900);
+            if ($this->busy($local)) { throw new MarketplaceOperationBusy(); }
             if (($local['acquired'] ?? false) !== true || ! is_string($local['token'] ?? null) || $local['token'] === '') {
                 throw new \RuntimeException();
             }
@@ -30,15 +31,26 @@ class MarketplaceStockMirrorLease
             if ($this->remoteEnabled()) {
                 // The deployed endpoint supports this shared marketplace mutex tag.
                 $remote = $this->remote('acquire', ['operation' => 'gitashop_mass_upload', 'seconds' => 900]);
+                if ($this->busy($remote)) { throw new MarketplaceOperationBusy(); }
                 if (($remote['acquired'] ?? false) !== true || ! is_string($remote['token'] ?? null) || $remote['token'] === '') {
                     throw new \RuntimeException();
                 }
                 $this->remoteToken = $remote['token'];
             }
+        } catch (MarketplaceOperationBusy $e) {
+            $this->release();
+            throw $e;
         } catch (\Throwable) {
             $this->release();
             throw new \RuntimeException('Koordinasi marketplace tidak tersedia.');
         }
+    }
+
+    private function busy(array $result): bool
+    {
+        return ($result['acquired'] ?? null) === false
+            && array_key_exists('token', $result) && $result['token'] === null
+            && is_string($result['operation'] ?? null) && trim($result['operation']) !== '';
     }
 
     public function renew(): void

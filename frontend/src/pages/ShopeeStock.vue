@@ -7,6 +7,10 @@
       </div>
       <div class="header-actions">
         <button class="ghost" @click="resetFilters">Reset Filter</button>
+        <button v-if="unified && accountKey === 'shopee-agnishopbjm'" class="bulk-sku-action" type="button"
+          :disabled="conflictingBusy || screenMutationBusy" @click="requestVariantBatch">
+          {{ variantBatchRun && variantBatchRun.status !== 'completed' ? 'Status Tambah Varian TikTok' : 'Tambah Semua Varian TikTok' }}
+        </button>
         <button
           class="bulk-sku-action"
           type="button"
@@ -102,6 +106,16 @@
           </select>
         </label>
       </div>
+      <div v-if="hasDestinationVariantCoverage" class="coverage-filter">
+        <label>
+          <span>Cakupan Varian Tujuan</span>
+          <select v-model="filters.variantCoverage">
+            <option value="all">Semua Produk</option>
+            <option value="tiktok-agnishopbjm">Kurang Varian TikTok</option>
+            <option value="shopee-gitacollectionbjm">Kurang Varian Gitashop</option>
+          </select>
+        </label>
+      </div>
     </div>
 
     <div class="toolbar">
@@ -116,6 +130,7 @@
 
     <p v-if="syncMessage" :class="['sync-message', syncTone]">{{ syncMessage }}</p>
     <p v-if="hasDestinationPresence" class="destination-note">Ketersediaan tujuan berdasarkan katalog tersimpan. Baris kuning belum ditemukan di TikTok atau Gitashop dan ditampilkan lebih dulu, sesuai filter yang dipilih.</p>
+    <p v-if="hasDestinationVariantCoverage" class="destination-note">Cakupan varian berdasarkan katalog tersimpan. Varian yang belum ditemukan akan diperiksa ulang dengan data terbaru sebelum ditambahkan.</p>
 
     <div class="panel">
       <div class="table-wrap">
@@ -147,6 +162,7 @@
                       <small>Sales: {{ item.sales || 0 }} | Likes: {{ item.likes || 0 }}</small>
                       <span class="store-pill">{{ item.shop_name || 'Agni Shop Banjarmasin' }}</span>
                       <small v-if="productPresenceInfo(item).message" :class="['destination-info', { 'destination-missing': productPresenceInfo(item).missingCount > 0 }]">{{ productPresenceInfo(item).message }}</small>
+                      <small v-for="coverage in variantCoverageInfo(item)" :key="coverage.account" :class="['destination-info', { 'destination-missing': coverage.missing }]">{{ coverage.label }}</small>
                       <small v-if="creationRowResult(creationRuns[String(item.item_id)])" class="destination-info">{{ creationRowResult(creationRuns[String(item.item_id)]).label }}</small>
                       <small v-if="gitaCreationRowResult(gitaCreationRuns[String(item.item_id)])" class="destination-info">{{ gitaCreationRowResult(gitaCreationRuns[String(item.item_id)]).label }}</small>
                       <small v-else-if="gitaCreationRemembered[String(item.item_id)]" class="destination-info">Status Gitashop tersimpan belum dapat diperiksa.</small>
@@ -182,6 +198,8 @@
                 </td>
                 <td>
                   <div class="actions">
+                    <button v-if="variantAdditionEligible(item)" :disabled="screenMutationBusy || conflictingBusy" @click="requestCreation(variantAddition, item)">Tambah Semua Varian TikTok ({{ item.destination_variant_coverage['tiktok-agnishopbjm'].missing_count }})</button>
+                    <button v-else-if="(variantRuns[String(item.item_id)] || variantRemembered[String(item.item_id)]) && unified && accountKey === 'shopee-agnishopbjm'" :disabled="screenMutationBusy || conflictingBusy" @click="requestCreation(variantAddition, item, true)">{{ variantRuns[String(item.item_id)] ? 'Status Varian TikTok' : 'Muat Status Varian TikTok' }}</button>
                     <button v-if="creationEligible(item)" :disabled="screenMutationBusy || conflictingBusy" @click="requestCreation(creation, item)">Buat di TikTok</button>
                     <button v-else-if="(creationRuns[String(item.item_id)] || creationRemembered[String(item.item_id)]) && unified && accountKey === 'shopee-agnishopbjm'" :disabled="screenMutationBusy || conflictingBusy" @click="requestCreation(creation, item, true)">{{ !creationRuns[String(item.item_id)] ? 'Muat Status TikTok' : creationRuns[String(item.item_id)].status === 'submitted_unverified' ? 'Periksa Status' : 'Status Produk TikTok' }}</button>
                     <button v-if="gitaCreationEligible(item)" :disabled="screenMutationBusy || conflictingBusy" @click="requestCreation(gitaCreation, item)">Buat di Gitashop</button>
@@ -210,6 +228,7 @@
                       <span class="variant-code">
                         <small>SKU Real</small>
                         <strong>{{ shopeeRealSku(model) || 'Tidak ada SKU' }}</strong>
+                        <small v-for="coverage in modelVariantCoverageInfo(item, model)" :key="coverage.account" class="destination-info destination-missing">{{ coverage.label }}</small>
                         <span v-if="missingShopeeSku(model)" class="missing-sku-badge">SKU Shopee Kosong</span>
                         <span v-else-if="templateSku(item, model) && shopeeRealSku(model) !== templateSku(item, model)" class="missing-sku-badge">{{ agniDestination ? 'SKU berbeda dari Agni' : 'SKU tidak sesuai template' }}</span>
                         <small>{{ agniDestination ? 'SKU Acuan Agni' : 'SKU Template' }}</small>
@@ -352,18 +371,25 @@
       </section>
     </div>
   </section>
-  <StockHubTiktokProductCreation v-if="unified && accountKey === 'shopee-agnishopbjm'" ref="creation" :disabled="mirrorBusy || screenMutationBusy || gitaCreationBusy" @busy="creationBusy = $event" @run="applyCreationRun" @remembered="creationRemembered[$event] = true" />
-  <StockHubGitaProductCreation v-if="unified && accountKey === 'shopee-agnishopbjm'" ref="gitaCreation" :disabled="mirrorBusy || screenMutationBusy || creationBusy" @busy="gitaCreationBusy = $event" @run="applyGitaCreationRun" @remembered="gitaCreationRemembered[$event] = true" />
+  <StockHubTiktokProductCreation v-if="unified && accountKey === 'shopee-agnishopbjm'" ref="creation" :disabled="mirrorBusy || screenMutationBusy || gitaCreationBusy || variantBusy || variantBatchBusy" @busy="creationBusy = $event" @run="applyCreationRun" @remembered="creationRemembered[$event] = true" />
+  <StockHubGitaProductCreation v-if="unified && accountKey === 'shopee-agnishopbjm'" ref="gitaCreation" :disabled="mirrorBusy || screenMutationBusy || creationBusy || variantBusy || variantBatchBusy" @busy="gitaCreationBusy = $event" @run="applyGitaCreationRun" @remembered="gitaCreationRemembered[$event] = true" />
+  <StockHubTiktokVariantAddition v-if="unified && accountKey === 'shopee-agnishopbjm'" ref="variantAddition" :disabled="mirrorBusy || screenMutationBusy || creationBusy || gitaCreationBusy || variantBatchBusy" @busy="variantBusy = $event" @run="applyVariantRun" @remembered="variantRemembered[$event] = true" @completed="variantRefreshPending = true" />
+  <StockHubTiktokVariantBatch v-if="unified && accountKey === 'shopee-agnishopbjm'" ref="variantBatch" :disabled="mirrorBusy || screenMutationBusy || creationBusy || gitaCreationBusy || variantBusy"
+    @busy="variantBatchBusy = $event" @run="variantBatchRun = $event" @completed="variantRefreshPending = true" @inspect-product="inspectBatchProduct" />
 </template>
 
 <script setup>
 import OrphanVariantCleanup from '@/components/OrphanVariantCleanup.vue'
+import StockHubTiktokVariantAddition from '@/components/StockHubTiktokVariantAddition.vue'
+import StockHubTiktokVariantBatch from '@/components/StockHubTiktokVariantBatch.vue'
+import { canAddTiktokVariants } from './stockHubTiktokVariantState'
 import StockHubGitaProductCreation from '@/components/StockHubGitaProductCreation.vue'
 import StockHubTiktokProductCreation from '@/components/StockHubTiktokProductCreation.vue'
 import { computed, onMounted, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { omnichannelService } from '@/services'
 import { shopeeTemplateSku, shopeeSkuRepairRows, shopeeAllSkuRepairRows } from './shopeeSkuRepairState'
 import { productPresenceInfo, compareProductPresence } from './marketplaceProductPresenceState'
+import { variantCoverageInfo, matchesVariantCoverageFilter, modelVariantCoverageInfo } from './marketplaceVariantCoverageState'
 import { canCreateGitaProduct, creationRowResult as gitaCreationRowResult } from './stockHubGitaProductCreationState'
 import { canCreateTiktokProduct, creationRowResult } from './stockHubTiktokProductCreationState'
 
@@ -378,7 +404,16 @@ const props = defineProps({
 const emit = defineEmits(['mirror-stock', 'busy'])
 const creation = ref(null), creationBusy = ref(false), creationRuns = reactive({}), creationRemembered = reactive({})
 const gitaCreation = ref(null), gitaCreationBusy = ref(false), gitaCreationRuns = reactive({}), gitaCreationRemembered = reactive({})
-const conflictingBusy = computed(() => props.mirrorBusy || creationBusy.value || gitaCreationBusy.value)
+const variantAddition = ref(null), variantBusy = ref(false), variantRuns = reactive({}), variantRemembered = reactive({}), variantRefreshPending = ref(false)
+const variantBatch = ref(null), variantBatchBusy = ref(false), variantBatchRun = ref(null)
+const conflictingBusy = computed(() => props.mirrorBusy || creationBusy.value || gitaCreationBusy.value || variantBusy.value || variantBatchBusy.value)
+function requestVariantBatch() {
+  if (conflictingBusy.value || screenMutationBusy.value) return
+  return variantBatch.value?.request()
+}
+function inspectBatchProduct(item) { return requestCreation(variantAddition.value, item, true) }
+const variantAdditionEligible = item => canAddTiktokVariants({ unified: props.unified, accountKey: props.accountKey, item, run: variantRuns[String(item.item_id)], remembered: variantRemembered[String(item.item_id)] })
+function applyVariantRun(run) { variantRuns[String(run.source_product_id)] = run }
 const screenMutationBusy = computed(() => Boolean(cleanupBusy.value || repairBusy.value || loading.value || updatingSkuKey.value || deletingVariantKey.value || syncingItemId.value || bulkSkuUpdating.value))
 function requestCreation(dialog, item, inspect = false) {
   if (conflictingBusy.value || screenMutationBusy.value) return
@@ -502,6 +537,7 @@ const deleteModal = reactive({
 })
 const filters = reactive({
   store: 'all',
+  variantCoverage: 'all',
   status: 'all',
   minimumStock: null,
   price: 'all',
@@ -521,6 +557,7 @@ const soldOutCount = computed(() => items.value.filter((item) => isSoldOut(item)
 const inactiveCount = computed(() => items.value.filter((item) => !isLive(item)).length)
 const variantCount = computed(() => items.value.reduce((sum, item) => sum + (item.models?.length || 0), 0))
 const hasDestinationPresence = computed(() => items.value.some(item => item.destination_presence))
+const hasDestinationVariantCoverage = computed(() => items.value.some(item => item.destination_variant_coverage))
 const grandStock = computed(() => visibleItems.value.reduce((sum, item) => sum + totalStock(item.models), 0))
 const grandValue = computed(() => visibleItems.value.reduce((sum, item) => sum + totalValue(item.models), 0))
 const storeOptions = computed(() => [...new Set(items.value.map((item) => item.shop_name || 'Agni Shop Banjarmasin'))].sort())
@@ -549,6 +586,7 @@ const filteredItems = computed(() => {
 
   return items.value
     .filter((item) => {
+      if (!matchesVariantCoverageFilter(item, filters.variantCoverage)) return false
       if (activeTab.value === 'live' && (!isLive(item) || isSoldOut(item))) return false
       if (activeTab.value === 'soldout' && !isSoldOut(item)) return false
       if (activeTab.value === 'inactive' && isLive(item)) return false
@@ -608,6 +646,10 @@ watch(() => filters.search, () => {
 })
 
 watch(() => filters.searchBy, () => {
+  page.value = 1
+})
+
+watch(() => filters.variantCoverage, () => {
   page.value = 1
 })
 
@@ -849,6 +891,7 @@ const formatDate = (value) => {
 
 const resetFilters = () => {
   filters.store = 'all'
+  filters.variantCoverage = 'all'
   filters.status = 'all'
   filters.minimumStock = null
   filters.price = 'all'
@@ -896,7 +939,7 @@ const confirmBulkSkuUpdate = async () => {
   }
 }
 
-watch(() => Boolean(creationBusy.value || gitaCreationBusy.value || screenMutationBusy.value), value => emit('busy', value), { flush: 'sync', immediate: true })
+watch(() => Boolean(creationBusy.value || gitaCreationBusy.value || variantBusy.value || variantBatchBusy.value || screenMutationBusy.value), value => emit('busy', value), { flush: 'sync', immediate: true })
 onBeforeUnmount(() => emit('busy', false))
 
 const loadData = async (syncMode = false) => {
@@ -922,6 +965,10 @@ const loadData = async (syncMode = false) => {
     loading.value = false
   }
 }
+
+watch(() => [variantRefreshPending.value, conflictingBusy.value, screenMutationBusy.value], ([pending, busy, screenBusy]) => {
+  if (pending && !busy && !screenBusy) { variantRefreshPending.value = false; loadData(false) }
+})
 
 const syncAndLoad = async () => {
   if (conflictingBusy.value) return
@@ -969,6 +1016,7 @@ button { border: 0; border-radius: 6px; padding: 9px 12px; cursor: pointer; }
 .metric span { color: #64748b; display: block; font-size: 12px; margin-bottom: 6px; }
 .metric strong { color: #111827; font-size: 22px; }
 .filter-panel { background: #fff; border: 1px solid #d9e2ec; border-radius: 8px; padding: 14px; margin-bottom: 12px; }
+.coverage-filter { margin-top: 10px; max-width: 320px; }
 .filter-row { display: grid; grid-template-columns: repeat(4, minmax(150px, 1fr)); gap: 10px; align-items: end; }
 .filter-row + .filter-row { margin-top: 10px; grid-template-columns: 2fr 1fr; }
 label span { color: #64748b; display: block; font-size: 12px; margin-bottom: 6px; }
