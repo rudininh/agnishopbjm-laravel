@@ -25,6 +25,7 @@ class StockHubTiktokVariantGatewayTest extends TestCase
     private bool $connectionFailure = false;
     private int $edits = 0;
     private array $submitted = [];
+    private string $sourceStatus='NORMAL';
 
     protected function setUp(): void
     {
@@ -52,7 +53,7 @@ class StockHubTiktokVariantGatewayTest extends TestCase
         Http::fake(function ($r) {
             $path = parse_url($r->url(), PHP_URL_PATH);
             parse_str(parse_url($r->url(), PHP_URL_QUERY) ?? '', $q);
-            if ($path === '/api/v2/product/get_item_base_info') { return Http::response(['error' => '', 'response' => ['item_list' => [['item_id' => 10, 'shop_id' => 11, 'item_status' => 'NORMAL', 'item_name' => 'Colors', 'description' => 'Original', 'image' => ['image_url_list' => ['https://img.test/main.jpg']]]]]]); }
+            if ($path === '/api/v2/product/get_item_base_info') { return Http::response(['error' => '', 'response' => ['item_list' => [['item_id' => 10, 'shop_id' => 11, 'item_status' => $this->sourceStatus, 'item_name' => 'Colors', 'description' => 'Original', 'image' => ['image_url_list' => ['https://img.test/main.jpg']]]]]]); }
             if ($path === '/api/v2/product/get_model_list') { return Http::response(['error' => '', 'response' => ['model' => $this->models, 'tier_variation' => $this->tiers]]); }
             if ($path === '/product/202309/products/90') { return Http::response(['code' => 0, 'data' => isset($q['return_under_review_version']) ? $this->review : $this->live]); }
             if ($path === '/product/202509/products/90/partial_edit') {
@@ -72,6 +73,20 @@ class StockHubTiktokVariantGatewayTest extends TestCase
     private function sku(string $id, string $code, string $value, int $stock, string $price): array
     {
         return ['id' => $id, 'seller_sku' => 'INT-10-'.$code, 'price' => ['currency' => 'IDR', 'sale_price' => $price], 'inventory' => [['warehouse_id' => 'wh', 'quantity' => $stock]], 'sales_attributes' => [['id' => '100', 'name' => 'Color', 'value_id' => '200'.$id, 'value_name' => $value, 'sku_img' => ['uri' => 'retained-uri']]], 'pre_sale' => ['type' => 'NONE']];
+    }
+
+    public function test_inactive_source_is_explicit_for_batch_children_and_legacy_default_stays_active_only():void
+    {
+        $this->sourceStatus='BANNED';
+        $source=app(StockHubTiktokVariantGateway::class)->source('10',true);
+        $this->assertSame('10',$source['id']);$this->assertSame(0,$source['variants'][1]['stock']);
+        $this->expectException(\DomainException::class);app(StockHubTiktokVariantGateway::class)->source('10');
+    }
+
+    public function test_explicit_batch_source_rejects_name_drift_away_from_verified_template():void
+    {
+        $this->models[0]['model_name']='Rose';
+        $this->expectException(\DomainException::class);app(StockHubTiktokVariantGateway::class)->source('10',true);
     }
 
     public function test_one_combined_edit_preserves_red_and_adds_blue_zero_and_green_fresh_stock(): void
@@ -169,6 +184,68 @@ class StockHubTiktokVariantGatewayTest extends TestCase
     {
         $this->review['skus'][] = $this->sku('902', 'BLUE', 'Blue', 0, '25000');
         $this->review['skus'][] = $this->sku('903', 'GREEN', 'Green', 4, '25000');
+    }
+
+    public function test_explicit_recovery_proves_only_missing_additions_without_writes(): void
+    {
+        [$source,$expected]=$this->expectedEdit();$gateway=app(StockHubTiktokVariantGateway::class);
+        $proof=$gateway->reconcileMissing($source,$expected,'90');
+        $this->assertSame(['INT-10-BLUE','INT-10-GREEN'],array_column($proof['missing'],'seller_sku'));
+        $this->review['skus'][]=$this->sku('902','BLUE','Blue',0,'25000');$this->live=$this->review;
+        $proof=$gateway->reconcileMissing($source,$expected,'90');
+        $this->assertSame(['INT-10-GREEN'],array_column($proof['missing'],'seller_sku'));
+        $this->assertSame(['901','902'],array_column($proof['target']['skus'],'id'));
+        $this->assertSame(0,DB::table('tiktok_products')->count());$this->assertSame(0,$this->edits);
+        Http::assertNotSent(fn($request)=>$request->method()!=='GET');
+    }
+
+    public function test_explicit_recovery_blocks_pending_review_and_lost_retained_identity(): void
+    {
+        [$source,$expected]=$this->expectedEdit();$original=$this->live;
+        foreach(['pending','identity','missing_retained','source_changed','unexpected'] as $case){
+            $this->live=$original;$this->review=$original;$fresh=$source;
+            if($case==='pending')$this->review['audit']['status']='AUDITING';
+            if($case==='identity'){$this->live['skus'][0]['id']='999';$this->review=$this->live;}
+            if($case==='missing_retained'){$this->live['skus']=[$this->sku('902','BLUE','Blue',0,'25000')];$this->review=$this->live;}
+            if($case==='source_changed')$fresh['variants'][1]['seller_sku']='INT-10-WRONG';
+            if($case==='unexpected'){$this->live['skus'][]=$this->sku('999','OTHER','Other',0,'25000');$this->review=$this->live;}
+            try{app(StockHubTiktokVariantGateway::class)->reconcileMissing($fresh,$expected,'90');$this->fail('Recovery must block '.$case);}
+            catch(\DomainException){$this->assertSame(0,$this->edits);}
+        }
+        Http::assertNotSent(fn($request)=>$request->method()!=='GET');
+    }
+
+    public function test_recovery_uses_current_agni_name_for_absent_variant_with_same_source_identity(): void
+    {
+        [$source,$expected]=$this->expectedEdit();
+        $source['variants'][1]['name']='New blue';$source['variants'][1]['attributes'][0]['value_name']='New blue';
+        $proof=app(StockHubTiktokVariantGateway::class)->reconcileMissing($source,$expected,'90');
+        $this->assertSame('New blue',$proof['missing'][0]['name']);$this->assertSame('INT-10-BLUE',$proof['missing'][0]['seller_sku']);
+    }
+
+    public function test_missing_previously_observed_additions_report_fresh_coverage_without_caching_or_editing(): void
+    {
+        [$source,$expected]=$this->expectedEdit();$this->readbackAdditions();$this->review['audit']['status']='AUDITING';
+        app(StockHubTiktokVariantGateway::class)->verify($source,$expected,'90');
+        $cached=DB::table('tiktok_products')->get();
+        $this->review=$this->live;
+        try { app(StockHubTiktokVariantGateway::class)->verify($source,$expected,'90');$this->fail('Missing additions must not be considered verified.'); }
+        catch(\DomainException $e) {
+            $this->assertSame('App\\Services\\StockHubTiktokVariantCoverageMismatch',get_class($e));
+            $this->assertSame(3,$e->verification['expected_count']);$this->assertSame(1,$e->verification['actual_count']);
+            $this->assertSame(2,$e->verification['missing_count']);$this->assertSame('APPROVED',$e->verification['audit_status']);
+            $this->assertSame(['INT-10-BLUE','INT-10-GREEN'],array_column($e->verification['missing_variants'],'seller_sku'));
+        }
+        $this->assertEquals($cached,DB::table('tiktok_products')->get());$this->assertSame(0,$this->edits);
+    }
+    public function test_partial_subset_readback_allows_extra_safe_rows_but_pins_accepted_identity():void
+    {
+        [$source,$expected]=$this->expectedEdit();$expected['variants']=array_slice($expected['variants'],0,1);$expected['payload']['skus']=array_slice($expected['payload']['skus'],0,2);
+        $this->readbackAdditions();$this->live=$this->review;$gateway=app(StockHubTiktokVariantGateway::class);
+        $pins=[['source_variant_id'=>'102','seller_sku'=>'INT-10-BLUE','target_sku_id'=>'902','status'=>'updated']];
+        $result=$gateway->verifyContinuation($source,$expected,'90',$pins);$this->assertTrue($result['published']);$this->assertSame(['902'],array_column($result['variants'],'target_sku_id'));$this->assertSame(0,$this->edits);
+        $this->live['skus'][1]['id']='999';$this->review=$this->live;
+        $this->expectException(\DomainException::class);$gateway->verifyContinuation($source,$expected,'90',$pins);
     }
 
     public function test_pending_readback_verifies_all_additions_and_caches_only_account_scoped_additions(): void

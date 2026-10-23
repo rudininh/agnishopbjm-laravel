@@ -122,6 +122,7 @@ class OrphanVariantCleanupService
                                     $this->outcome($group, $state['selection'], 'stale', 'Katalog berubah selama proses.');
                                     break;
                                 }
+                                if ($accountKey === StockHubTiktokProductGateway::TARGET) StockHubTiktokVariantInterlock::assertRepairAvailable(null, (string) $productId);
                                 $attempted = true;
                                 $group['status'] = 'attempted';
                                 $this->save($runId, 'running', $state);

@@ -22,14 +22,14 @@ class StockHubTiktokProductGateway
         return $this->transport->call($account, $method, $path, $query, $body, 6, false);
     }
 
-    public function source(string $id, bool $exactSku = false): array
+    public function source(string $id, bool $exactSku = false, bool $allowInactive = false): array
     {
         $ctx = $this->transport->context(self::SOURCE);
         $data = $this->call(self::SOURCE, 'GET', '/api/v2/product/get_item_base_info', ['item_id_list' => $id]);
         $p = $data['item_list'][0] ?? [];
         $this->require(count($data['item_list'] ?? []) === 1 && (string) ($p['item_id'] ?? '') === $id, 'Produk sumber tidak ditemukan di Shopee Agni.');
         $this->require(! isset($p['shop_id']) || (string) $p['shop_id'] === $ctx['shop_id'], 'Produk sumber bukan milik Shopee Agni.');
-        $this->require(($p['item_status'] ?? '') === 'NORMAL', 'Produk sumber harus aktif.');
+        $this->require(in_array($p['item_status'] ?? '', $exactSku && $allowInactive ? ['NORMAL','UNLIST','BANNED'] : ['NORMAL'], true), 'Produk sumber harus aktif.');
         $this->require(is_string($p['item_name'] ?? null) && trim($p['item_name']) !== '' && is_string($p['description'] ?? null) && trim($p['description']) !== '', 'Judul atau deskripsi sumber belum lengkap.');
         $models = $this->call(self::SOURCE, 'GET', '/api/v2/product/get_model_list', ['item_id' => $id]);
         $rows = $models['model'] ?? $models['model_list'] ?? null;

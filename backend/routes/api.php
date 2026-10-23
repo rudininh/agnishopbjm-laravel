@@ -25,7 +25,16 @@ use App\Http\Controllers\MarketplaceStockMirrorController;
 use App\Http\Controllers\StockHubTiktokProductController;
 use App\Http\Controllers\StockHubGitaProductController;
 use App\Http\Controllers\StockHubTiktokVariantController;
+use App\Http\Controllers\StockHubTiktokVariantRepairController;
 use App\Http\Controllers\StockHubTiktokVariantBatchController;
+use App\Http\Controllers\StockHubAgniSkuController;
+
+Route::prefix('stock-hub/agni-skus')->group(function (): void {
+    Route::get('source/{productId}', [StockHubAgniSkuController::class, 'source'])->whereNumber('productId');
+    Route::post('runs', [StockHubAgniSkuController::class, 'start']);
+    Route::post('runs/{runId}/step', [StockHubAgniSkuController::class, 'step'])->whereUuid('runId');
+    Route::post('runs/{runId}/recover', [StockHubAgniSkuController::class, 'recover'])->whereUuid('runId');
+});
 
 Route::prefix('stock-hub/tiktok-variant-batches')->group(function (): void {
     Route::post('runs', [StockHubTiktokVariantBatchController::class, 'start']);
@@ -36,11 +45,18 @@ Route::prefix('stock-hub/tiktok-variant-batches')->group(function (): void {
     Route::post('runs/{runId}/resume', [StockHubTiktokVariantBatchController::class, 'resume'])->whereUuid('runId');
 });
 
+Route::prefix('stock-hub/tiktok-variant-repairs')->group(function (): void {
+    Route::post('runs', [StockHubTiktokVariantRepairController::class, 'start']);
+    Route::get('source/{productId}', [StockHubTiktokVariantRepairController::class, 'source'])->whereNumber('productId');
+    Route::get('runs/{runId}', [StockHubTiktokVariantRepairController::class, 'show'])->whereUuid('runId');
+    Route::post('runs/{runId}/step', [StockHubTiktokVariantRepairController::class, 'step'])->whereUuid('runId');
+});
 Route::prefix('stock-hub/tiktok-variants')->group(function (): void {
     Route::post('runs', [StockHubTiktokVariantController::class, 'start']);
     Route::get('source/{productId}', [StockHubTiktokVariantController::class, 'source'])->whereNumber('productId');
     Route::get('runs/{runId}', [StockHubTiktokVariantController::class, 'show'])->whereUuid('runId');
     Route::post('runs/{runId}/step', [StockHubTiktokVariantController::class, 'step'])->whereUuid('runId');
+    Route::post('runs/{runId}/missing', [StockHubTiktokVariantController::class, 'missing'])->whereUuid('runId');
 });
 
 Route::prefix('marketplace/tiktok-product-creation')->group(function (): void {

@@ -5,7 +5,7 @@ namespace App\Services;
 /** Explicitly authorized repair preview. Never called implicitly by variant addition. */
 final class StockHubTiktokSourceReconciliationPlan
 {
-    public function build(array $source, array $snapshot, array $live, array $review): array
+    public function build(array $source, array $snapshot, array $live, array $review, ?array $template = null): array
     {
         $this->require(($snapshot['account_key'] ?? '') === StockHubTiktokProductGateway::TARGET
             && ($snapshot['source_account_key'] ?? '') === StockHubTiktokProductGateway::SOURCE
@@ -19,8 +19,8 @@ final class StockHubTiktokSourceReconciliationPlan
                 && ($product['audit']['status'] ?? null) === 'APPROVED', 'Perubahan TikTok masih menunggu pemeriksaan.');
         }
         $payload = new StockHubTiktokVariantPayload();
-        $rows = $payload->retained($live);
-        $other = $payload->retained($review);
+        $rows = $payload->repairSnapshot($live, true);
+        $other = $payload->repairSnapshot($review, true);
         $canonical = function(array $rows): array {
             foreach ($rows as &$row) { unset($row['seller_sku']); } unset($row);
             usort($rows,fn($a,$b)=>strcmp($a['id'],$b['id'])); return $rows;
@@ -28,6 +28,10 @@ final class StockHubTiktokSourceReconciliationPlan
         $this->require($canonical($rows) === $canonical($other)
             && ($live['package_weight'] ?? null) === ($review['package_weight'] ?? null)
             && ($live['package_dimensions'] ?? null) === ($review['package_dimensions'] ?? null), 'Versi TikTok berbeda di luar SKU; perbaikan dihentikan.');
+        $package = $template !== null ? (new StockHubTiktokPackageTemplate())->apply($live, $source, $template) : ['target' => $live, 'product_fields' => []];
+        $live = $package['target'];
+        $rows = $payload->repairSnapshot($live);
+        $skuCounts=array_count_values(array_map(fn($r)=>trim($r['seller_sku']),$rows));
         $sourceRows=$source['variants'] ?? [];
         $this->require(is_array($sourceRows) && array_is_list($sourceRows) && $sourceRows !== [], 'Varian Agni belum lengkap.');
         $sourceIdentity = array_map(fn($v)=>[(string)$v['id'],$v['name'],$v['seller_sku']],$sourceRows);
@@ -54,7 +58,9 @@ final class StockHubTiktokSourceReconciliationPlan
         }
         $keep=[];$changed=[];$deleted=[];$used=[];
         foreach($rows as $row) {
-            $matches=array_values(array_filter($sourceRows,fn($v)=>$v['seller_sku']===$row['seller_sku']));
+            // A repeated seller SKU cannot identify which source model owns this target row.
+            $matches=$skuCounts[trim($row['seller_sku'])]===1
+                ?array_values(array_filter($sourceRows,fn($v)=>$v['seller_sku']===$row['seller_sku'])):[];
             if (!$matches) {
                 $combo=$payload->combination($row['sales_attributes']);
                 if(isset($sourceCombos[$combo]))$matches=[$sourceCombos[$combo]];
@@ -88,7 +94,7 @@ final class StockHubTiktokSourceReconciliationPlan
         $repaired=[...$live,'skus'=>$keep];
         $payload->retained($repaired);
         $prepared=$payload->prepare($source,$repaired,null);
-        return ['payload'=>['save_mode'=>'LISTING','skus'=>$keep],'changed'=>$changed,'deleted'=>$deleted,'missing'=>count($prepared['variants'])];
+        return ['payload'=>['save_mode'=>'LISTING','skus'=>$keep,...$package['product_fields']],'changed'=>$changed,'deleted'=>$deleted,'missing'=>count($prepared['variants'])];
     }
 
     private function require(bool $ok,string $message): void

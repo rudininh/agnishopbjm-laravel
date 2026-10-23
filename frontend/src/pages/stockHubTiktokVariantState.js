@@ -6,7 +6,8 @@ const labels = {
   submitting: 'Mengirim semua varian baru', verifying: 'Memverifikasi varian TikTok',
   blocked: 'Perlu dilengkapi atau diperbaiki', rejected: 'Ditolak TikTok', exists: 'Semua varian sudah ada',
   success: 'Varian TikTok terverifikasi', partial: 'Sebagian varian terverifikasi',
-  under_review: 'Varian menunggu peninjauan TikTok', submitted_unverified: 'Terkirim, belum terverifikasi'
+  under_review: 'Varian menunggu peninjauan TikTok', submitted_unverified: 'Terkirim, belum terverifikasi',
+  reconciled_missing: 'Pemeriksaan selesai · dilanjutkan melalui proses baru'
 }
 
 export function canAddTiktokVariants({ unified, accountKey, item, busy = false, run, remembered = false }) {
@@ -31,11 +32,14 @@ export function variantPriceContext(value) {
 
 export function createTiktokVariantController(api, options = {}) {
   return createProductCreationController({
-    start: api.startTiktokVariantAddition?.bind(api), source: api.tiktokVariantAdditionSource?.bind(api), step: api.stepTiktokVariantAddition?.bind(api)
+    start: payload => payload.recovery_run_id
+      ? api.addMissingTiktokVariants(payload.recovery_run_id, { request_key: payload.request_key })
+      : api.startTiktokVariantAddition(payload),
+    source: api.tiktokVariantAdditionSource?.bind(api), step: api.stepTiktokVariantAddition?.bind(api)
   }, {
     runningStatuses: ['preparing', 'scanning', 'uploading', 'submitting', 'verifying'],
     checkableStatuses: ['submitted_unverified', 'under_review'],
     newRunStatuses: completed, retryStatuses: ['blocked', 'rejected', ...completed],
-    storageKey: 'stock-hub-tiktok-variants:identifiers'
+    storageKey: 'stock-hub-tiktok-variants:identifiers', allowMissingRecovery: true
   }, options)
 }

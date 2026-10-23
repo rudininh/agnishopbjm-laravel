@@ -10,7 +10,14 @@ class StockHubTiktokVariantGateway
 {
     public function __construct(private StockHubTiktokProductGateway $products, private MarketplaceStockMirrorTransport $transport, private StockHubTiktokVariantPayload $payload) {}
 
-    public function source(string $id): array { return $this->products->source($id, true); }
+    public function source(string $id, bool $allowInactive = false): array
+    {
+        $source=$this->products->source($id,true,$allowInactive);
+        if($allowInactive)foreach($source['variants'] as $variant) {
+            $this->require($variant['seller_sku']===(new ShopeeSellerSkuTemplate())->build($id,$variant['name']), 'Nama atau SKU sumber berubah setelah normalisasi batch. Periksa dan Lanjutkan dari tahap sumber.');
+        }
+        return $source;
+    }
     public function page(?string $cursor): array { return $this->products->page($cursor); }
     public function catalogTarget(string $id): array { return $this->products->target($id, true); }
     public function targetShop(): string { return $this->transport->context(StockHubTiktokProductGateway::TARGET, false, 6)['shop_id']; }
@@ -31,7 +38,7 @@ class StockHubTiktokVariantGateway
             usort($rows, fn ($a, $b) => strcmp($a['id'], $b['id']));
             return ['skus' => $rows, 'package_weight' => $product['package_weight'] ?? null, 'package_dimensions' => $product['package_dimensions'] ?? null];
         };
-        $this->require($canonical($review) === $canonical($live), 'Versi aktif dan pemeriksaan produk TikTok berbeda. Selesaikan perubahan di Seller Center.');
+        if ($canonical($review) !== $canonical($live)) { throw new StockHubTiktokVariantIdentityRepairRequired('Versi aktif dan pemeriksaan produk TikTok berbeda. Selesaikan perubahan di Seller Center atau periksa Perbaiki Mengikuti Agni.'); }
         return $live;
     }
 
@@ -50,6 +57,62 @@ class StockHubTiktokVariantGateway
         $shop = $this->targetShop();
         $product = $this->products->target($targetId, true);
         $this->assertTargetShop($shop);
+        return $this->verifyProduct($source,$expected,$targetId,$product);
+    }
+
+    /** Explicit recovery only: prove approved absence, without replaying or caching an edit. */
+    public function reconcileMissing(array $source, array $expected, string $targetId): array
+    {
+        $target=$this->target($targetId); // Requires equivalent approved live and review snapshots.
+        $actual=$this->payload->retained($target);
+        $submitted=$expected['payload']['skus']??null;
+        $variants=$expected['variants']??null;
+        $this->require(is_array($submitted)&&array_is_list($submitted)&&$submitted!==[]
+            &&is_array($variants)&&array_is_list($variants)&&$variants!==[], 'Kontrak kiriman sebelumnya belum lengkap.');
+        $bySku=array_column($actual,null,'seller_sku');$old=[];$new=array_column($variants,null,'seller_sku');
+        $this->require(count($new)===count($variants),'Identitas varian kiriman sebelumnya berulang.');
+        foreach($submitted as $row){
+            $sku=$row['seller_sku']??null;
+            $this->require(is_string($sku)&&$sku!==''&&!isset($old[$sku]),'Identitas SKU kiriman sebelumnya belum lengkap.');
+            $old[$sku]=$row;$current=$bySku[$sku]??null;
+            $this->require(isset($row['id'])||isset($new[$sku]),'Asal varian kiriman sebelumnya belum lengkap.');
+            if(isset($row['id']))$this->require($current!==null&&(string)$row['id']===$current['id'],'Varian lama TikTok berubah atau hilang. Perbaiki relasi sebelum menambahkan.');
+            if($current!==null)$this->require($this->payload->combination($row['sales_attributes']??[])===$this->payload->combination($current['sales_attributes']), 'Nama varian TikTok berubah. Perbaiki mengikuti Agni terlebih dahulu.');
+        }
+        $this->require(!array_diff_key($bySku,$old),'Ada varian TikTok di luar kiriman sebelumnya. Periksa relasi produk terlebih dahulu.');
+        $missing=[];
+        foreach($new as $sku=>$variant){
+            $this->require(isset($old[$sku])&&!isset($old[$sku]['id']),'Kontrak varian baru sebelumnya tidak valid.');
+            $matches=array_values(array_filter($source['variants']??[],fn($v)=>($v['id']??null)===($variant['id']??null)&&($v['seller_sku']??null)===$sku));
+            $this->require(count($matches)===1,'Identitas varian Agni berubah. Periksa SKU dan nama sumber.');
+            if(isset($bySku[$sku])){
+                $mapped=$this->payload->mapAttributes($matches[0]['attributes']??[],array_map(fn($a)=>['id'=>$a['id'],'name'=>$a['name']],$old[$sku]['sales_attributes']));
+                $this->require($this->payload->combination($mapped)===$this->payload->combination($old[$sku]['sales_attributes']),'Atribut varian Agni berubah. Periksa sumber terlebih dahulu.');
+            }else $missing[]=['source_variant_id'=>$variant['id'],'seller_sku'=>$sku,'name'=>$matches[0]['name']];
+        }
+        return ['target'=>$target,'missing'=>$missing];
+    }
+
+    /** Approved dual readback of the old contract, allowing independently added rows. */
+    public function verifyContinuation(array $source,array $expected,string $targetId,array $accepted):array
+    {
+        $product=$this->target($targetId);
+        $bySku=array_column($product['skus'],null,'seller_sku');$pins=[];
+        $this->require(count($accepted)===count($expected['variants']??[]),'Bukti varian parsial belum lengkap.');
+        foreach($accepted as $pin){
+            $sku=$pin['seller_sku']??null;$target=$pin['target_sku_id']??$pin['id']??null;$model=$pin['source_variant_id']??null;
+            $this->require(is_string($sku)&&!isset($pins[$sku])&&is_string($target)&&$target!==''
+                &&(string)($bySku[$sku]['id']??'')===$target
+                &&count(array_filter($expected['variants']??[],fn($v)=>($v['seller_sku']??null)===$sku&&($v['id']??null)===$model))===1,'Identitas varian parsial yang diterima berubah atau hilang. Jangan kirim ulang.');
+            $pins[$sku]=$target;
+        }
+        $submitted=array_column($expected['payload']['skus']??[],'seller_sku');
+        $product['skus']=array_values(array_filter($product['skus'],fn($sku)=>in_array($sku['seller_sku']??null,$submitted,true)));
+        return $this->verifyProduct($source,$expected,$targetId,$product);
+    }
+
+    private function verifyProduct(array $source,array $expected,string $targetId,array $product):array
+    {
         $this->require(in_array($product['status'] ?? null, ['ACTIVATE','ACTIVE',4,'SELLER_DRAFT','DRAFT','PENDING','AUDITING'], true)
             && in_array($product['audit']['status'] ?? null, ['APPROVED','AUDITING','PENDING'], true), 'Status produk TikTok hasil belum terverifikasi.');
         $actual = $this->payload->retained($product);
@@ -64,10 +127,13 @@ class StockHubTiktokVariantGateway
             }
         }
         $submitted = $expected['payload']['skus'] ?? null;
-        $this->require(is_array($submitted) && array_is_list($submitted) && count($actual) === count($submitted)
+        $this->require(is_array($submitted) && array_is_list($submitted)
             && is_array($expected['variants'] ?? null) && $expected['variants'] !== []
             && is_int($expected['price'] ?? null) && $expected['price'] > 0 && is_string($expected['warehouse_id'] ?? null), 'Cakupan varian hasil belum terverifikasi.');
         $bySku = array_column($actual, null, 'seller_sku');
+        if(count($actual)!==count($submitted)||array_diff(array_column($submitted,'seller_sku'),array_keys($bySku))) {
+            throw new StockHubTiktokVariantCoverageMismatch($submitted,$actual,$product['audit']['status']??null);
+        }
         $new = []; $seen = [];
         foreach ($submitted as $row) {
             $sellerSku = $row['seller_sku'] ?? null;

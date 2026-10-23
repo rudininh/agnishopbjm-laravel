@@ -80,6 +80,7 @@ class OrphanVariantGateway
 
     public function delete(string $accountKey, array $snapshot, array $targetIds): array
     {
+        if ($accountKey === StockHubTiktokProductGateway::TARGET) StockHubTiktokVariantInterlock::assertRepairAvailable(null, (string) $snapshot['target_product_id']);
         $this->target($accountKey);
         if ($snapshot['account_key'] !== $accountKey || ! $targetIds) throw new RuntimeException('Akun atau pilihan target tidak sesuai.');
         $all = array_column($snapshot['target_variants'], 'id');

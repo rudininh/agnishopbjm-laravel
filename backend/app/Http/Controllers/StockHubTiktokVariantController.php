@@ -22,6 +22,12 @@ class StockHubTiktokVariantController extends Controller
     public function source(string $productId) { return $this->respond(fn () => $this->service->source($productId)); }
     public function show(string $runId) { return $this->respond(fn () => $this->service->show($runId)); }
     public function step(string $runId) { return $this->respond(fn () => $this->service->step($runId)); }
+    public function missing(Request $request,string $runId)
+    {
+        $v=Validator::make($request->all(),['request_key'=>['required','uuid'],'source_product_id'=>['prohibited'],'target_product_id'=>['prohibited'],'context'=>['prohibited'],'account_key'=>['prohibited']]);
+        abort_if($v->fails(),422,'Identitas permintaan penambahan tidak valid.');
+        return $this->respond(fn()=>$this->service->recoverMissing($runId,$v->validated()['request_key']));
+    }
     private function respond(callable $action)
     {
         try { return response()->json(['data' => $action()]); }

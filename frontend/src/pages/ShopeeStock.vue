@@ -28,6 +28,12 @@
         <button class="primary shopee" @click="syncAndLoad" :disabled="conflictingBusy || (loading || bulkSkuUpdating || repairBusy)">
           {{ loading ? 'Memuat...' : 'Ambil Produk' }}
         </button>
+        <template v-if="unified && accountKey === 'shopee-agnishopbjm'">
+          <button v-for="target in destinationCatalogs" :key="target.key" class="bulk-sku-action" type="button"
+            :disabled="conflictingBusy || screenMutationBusy" @click="fetchDestinationCatalog(target.key)">
+            {{ destinationLoading === target.key ? `Mengambil Produk ${target.label}...` : `Ambil Produk ${target.label}` }}
+          </button>
+        </template>
       </div>
     </header>
 
@@ -406,7 +412,12 @@ const creation = ref(null), creationBusy = ref(false), creationRuns = reactive({
 const gitaCreation = ref(null), gitaCreationBusy = ref(false), gitaCreationRuns = reactive({}), gitaCreationRemembered = reactive({})
 const variantAddition = ref(null), variantBusy = ref(false), variantRuns = reactive({}), variantRemembered = reactive({}), variantRefreshPending = ref(false)
 const variantBatch = ref(null), variantBatchBusy = ref(false), variantBatchRun = ref(null)
-const conflictingBusy = computed(() => props.mirrorBusy || creationBusy.value || gitaCreationBusy.value || variantBusy.value || variantBatchBusy.value)
+const destinationLoading = ref('')
+const destinationCatalogs = [
+  { key: 'tiktok-agnishopbjm', label: 'TikTok' },
+  { key: 'shopee-gitacollectionbjm', label: 'Gitashop' }
+]
+const conflictingBusy = computed(() => props.mirrorBusy || creationBusy.value || gitaCreationBusy.value || variantBusy.value || variantBatchBusy.value || Boolean(destinationLoading.value))
 function requestVariantBatch() {
   if (conflictingBusy.value || screenMutationBusy.value) return
   return variantBatch.value?.request()
@@ -414,7 +425,7 @@ function requestVariantBatch() {
 function inspectBatchProduct(item) { return requestCreation(variantAddition.value, item, true) }
 const variantAdditionEligible = item => canAddTiktokVariants({ unified: props.unified, accountKey: props.accountKey, item, run: variantRuns[String(item.item_id)], remembered: variantRemembered[String(item.item_id)] })
 function applyVariantRun(run) { variantRuns[String(run.source_product_id)] = run }
-const screenMutationBusy = computed(() => Boolean(cleanupBusy.value || repairBusy.value || loading.value || updatingSkuKey.value || deletingVariantKey.value || syncingItemId.value || bulkSkuUpdating.value))
+const screenMutationBusy = computed(() => Boolean(destinationLoading.value || cleanupBusy.value || repairBusy.value || loading.value || updatingSkuKey.value || deletingVariantKey.value || syncingItemId.value || bulkSkuUpdating.value))
 function requestCreation(dialog, item, inspect = false) {
   if (conflictingBusy.value || screenMutationBusy.value) return
   return dialog?.request(item, inspect)
@@ -958,9 +969,11 @@ const loadData = async (syncMode = false) => {
     }
 
     page.value = 1
+    return true
   } catch (error) {
     syncMessage.value = error.response?.data?.message || 'Pengambilan produk Shopee gagal.'
     syncTone.value = 'error'
+    return false
   } finally {
     loading.value = false
   }
@@ -973,6 +986,37 @@ watch(() => [variantRefreshPending.value, conflictingBusy.value, screenMutationB
 const syncAndLoad = async () => {
   if (conflictingBusy.value) return
   await loadData(true)
+}
+
+const fetchDestinationCatalog = async accountKey => {
+  const target = destinationCatalogs.find(target => target.key === accountKey)
+  if (!target || !props.unified || props.accountKey !== 'shopee-agnishopbjm' || conflictingBusy.value || screenMutationBusy.value) return
+  destinationLoading.value = target.key
+  syncMessage.value = `Sedang mengambil produk ${target.label}. Tunggu hingga proses selesai.`
+  syncTone.value = 'info'
+  try {
+    const response = target.key === 'tiktok-agnishopbjm'
+      ? await omnichannelService.tiktokItems(true, { account_key: target.key })
+      : await omnichannelService.shopeeItems(true, { account_key: target.key })
+    const status = response.data?.sync?.status
+    if (!['ok', 'partial'].includes(status)) {
+      syncMessage.value = `Produk ${target.label} belum berhasil diambil. Periksa akun dan koneksi, lalu coba lagi.`
+      syncTone.value = 'error'
+      return
+    }
+    const refreshed = await loadData(false)
+    syncMessage.value = !refreshed
+      ? `Pengambilan produk ${target.label} ${status === 'partial' ? 'baru sebagian selesai' : 'selesai'}, tetapi daftar Agni belum berhasil dimuat ulang. Muat ulang halaman untuk memeriksa data.`
+      : status === 'partial'
+        ? `Produk ${target.label} baru sebagian berhasil diambil. Periksa akun dan koneksi sebelum mencoba kembali.`
+        : `Produk ${target.label} berhasil diambil. Indikator pada daftar Agni sudah diperbarui.`
+    syncTone.value = !refreshed || status === 'partial' ? 'warning' : 'success'
+  } catch {
+    syncMessage.value = `Produk ${target.label} belum berhasil diambil. Periksa akun dan koneksi, lalu coba lagi.`
+    syncTone.value = 'error'
+  } finally {
+    destinationLoading.value = ''
+  }
 }
 
 const syncProduct = async (item) => {

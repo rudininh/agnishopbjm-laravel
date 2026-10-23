@@ -329,6 +329,11 @@ final class ShopeeSkuTiktokVariantCleanupService
                 return;
             }
 
+            try { StockHubTiktokVariantInterlock::assertRepairAvailable(null, $productId); }
+            catch (\DomainException $e) {
+                $this->persistProductFailure($items, 'failed', 'tiktok_repair_pending', ['message' => $e->getMessage()], $owner);
+                return;
+            }
             $this->persistDeleteIntent($items, $expectedNonTargetIds, $tiktokBeforeResult, $owner);
             $deleteResult = $this->marketplaceCall(
                 $items,

@@ -9,7 +9,7 @@ export function createProductCreationController(api, config, options = {}) {
   const retryable = run => Boolean(run?.can_retry && retryStatuses.has(run.status))
   const storageKey = config.storageKey
   const sleep = options.sleep || (ms => new Promise(resolve => setTimeout(resolve, ms)))
-  const state = { sourceId: '', run: null, pendingKey: '', busy: false, paused: false, error: '' }
+  const state = { sourceId: '', run: null, pendingKey: '', busy: false, paused: false, error: '', prerequisite: '' }
   let alive = true, pendingPayload = null, pendingPreviousRunId = '', identifiers = {}
   try { identifiers = JSON.parse(options.storage?.getItem(storageKey) || '{}') } catch {}
   const notify = () => { if (alive) options.onChange?.({ ...state }) }
@@ -31,7 +31,14 @@ export function createProductCreationController(api, config, options = {}) {
     if (!/^\d+$/.test(String(sourceId))) throw Error('Produk sumber tidak valid.')
     if (state.sourceId !== String(sourceId)) {
       state.sourceId = String(sourceId); state.run = null; state.pendingKey = identifiers[state.sourceId]?.request_key || ''
+      state.prerequisite = ''
       pendingPayload = null; pendingPreviousRunId = state.pendingKey ? identifiers[state.sourceId]?.run_id || '' : ''
+      if (config.allowMissingRecovery && state.pendingKey && pendingPreviousRunId && identifiers[state.sourceId]?.operation === 'missing_recovery') {
+        pendingPayload = { source_product_id: state.sourceId, request_key: state.pendingKey, recovery_run_id: pendingPreviousRunId }
+      }
+      if (config.contextlessRequests && state.pendingKey) {
+        pendingPayload = { source_product_id: state.sourceId, request_key: state.pendingKey }
+      }
     }
   }
   const lookup = async () => {
@@ -40,6 +47,16 @@ export function createProductCreationController(api, config, options = {}) {
     // A malformed GET is not proof that creation is safe.
     if (run === undefined || (run !== null && (!run.run_id || String(run.source_product_id) !== state.sourceId))) {
       throw Error('Status tersimpan belum dapat diperiksa.')
+    }
+    state.prerequisite = ''
+    if (run === null && config.prerequisiteMessages && Object.hasOwn(response.data, 'prerequisite')) {
+      const code = response.data.prerequisite?.code
+      if (typeof code !== 'string' || !Object.hasOwn(config.prerequisiteMessages, code)) {
+        throw Error('Prasyarat perbaikan belum dapat diperiksa.')
+      }
+      state.prerequisite = code
+      state.error = config.prerequisiteMessages[code]
+      state.paused = true
     }
     update(run)
     return run
@@ -75,13 +92,14 @@ export function createProductCreationController(api, config, options = {}) {
     if (alive && continues(state.run)) state.paused = true
     notify()
   }
-  const startRequest = async context => {
+  const startRequest = async (context, recoveryRunId) => {
+    if (state.prerequisite) return
     if (!state.pendingKey) {
       state.pendingKey = stockMirrorRequestKey(options.crypto ?? globalThis.crypto)
       pendingPreviousRunId = state.run?.run_id || ''
     }
-    pendingPayload ||= { source_product_id: state.sourceId, request_key: state.pendingKey, ...(context ? { context } : {}) }
-    identifiers[state.sourceId] = { request_key: state.pendingKey, ...(pendingPreviousRunId ? { run_id: pendingPreviousRunId } : {}) }; persist(); notify()
+    pendingPayload ||= { source_product_id: state.sourceId, request_key: state.pendingKey, ...(context ? { context } : {}), ...(recoveryRunId ? { recovery_run_id: recoveryRunId } : {}) }
+    identifiers[state.sourceId] = { request_key: state.pendingKey, ...(pendingPreviousRunId ? { run_id: pendingPreviousRunId } : {}), ...(pendingPayload.recovery_run_id ? { operation: 'missing_recovery' } : {}) }; persist(); notify()
     if (await mutation(() => api.start(pendingPayload), true) && alive && !state.paused) await follow()
   }
   const execute = async action => {
@@ -95,18 +113,22 @@ export function createProductCreationController(api, config, options = {}) {
     start(sourceId) { return execute(async () => {
       select(sourceId)
       const saved = await lookup()
-      if (!alive) return
+      if (!alive || state.prerequisite) return
       if (saved && !state.pendingKey && retryable(saved) && newRunStatuses.has(saved.status)) await startRequest()
       else if (saved) await follow()
       else if (state.pendingKey) { state.paused = true; notify() }
       else await startRequest()
     }) },
-    recover(sourceId = state.sourceId) { return execute(async () => { select(sourceId); await lookup(); state.paused = continues(state.run); notify() }) },
+    recover(sourceId = state.sourceId) { return execute(async () => { select(sourceId); await lookup(); state.paused = Boolean(state.prerequisite) || continues(state.run); notify() }) },
     resume() { return execute(async () => { await lookup(); if (alive) await follow() }) },
     retry(context) { return execute(async () => { await lookup(); if (alive && !state.pendingKey && retryable(state.run)) await startRequest(context) }) },
+    retryMissing() { return execute(async () => {
+      await lookup()
+      if (alive && config.allowMissingRecovery && !state.pendingKey && state.run?.can_add_missing === true) await startRequest(undefined, state.run.run_id)
+    }) },
     retryPending() { return execute(async () => {
       const saved = await lookup()
-      if (!alive) return
+      if (!alive || state.prerequisite) return
       if (state.pendingKey && (!saved || saved.run_id === pendingPreviousRunId)) {
         // Filled context is deliberately not persisted. After reload, only GET recovery is safe for a lost contextual retry.
         if (pendingPreviousRunId && !pendingPayload) { state.error = 'Permintaan sebelumnya belum ditemukan. Muat status kembali; konteks tidak disimpan setelah halaman ditutup.'; state.paused = true; notify() }
@@ -116,7 +138,7 @@ export function createProductCreationController(api, config, options = {}) {
     checkStatus() { return execute(async () => {
       await lookup()
       if (alive && checkable.has(state.run?.status) && state.run.remote_product_id) {
-        await mutation(() => api.step(state.run.run_id))
+        await mutation(() => (api.check || api.step)(state.run.run_id))
       }
     }) },
     async restore() {

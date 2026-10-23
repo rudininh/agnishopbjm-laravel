@@ -27,10 +27,10 @@ class StockHubTiktokVariantPayload
             $this->require(! isset($sourceCombinations[$combination]), 'Kombinasi atribut varian Agni berulang.');
             $sourceCombinations[$combination] = true;
             if (isset($bySku[$skuKey])) {
-                $this->require($this->combination($bySku[$skuKey]['sales_attributes']) === $combination, 'SKU Agni dan atribut TikTok bertentangan.');
+                if ($this->combination($bySku[$skuKey]['sales_attributes']) !== $combination) { throw new StockHubTiktokVariantIdentityRepairRequired('SKU Agni dan atribut TikTok bertentangan.'); }
                 continue;
             }
-            $this->require(! isset($byCombination[$combination]), 'Nilai atribut varian TikTok sudah digunakan SKU lain.');
+            if (isset($byCombination[$combination])) { throw new StockHubTiktokVariantIdentityRepairRequired('Nilai atribut varian TikTok sudah digunakan SKU lain.'); }
             $image = $source['main_images'][0] ?? null;
             foreach ($variant['attributes'] as $attribute) { if (isset($attribute['image_url'])) { $image = $attribute['image_url']; break; } }
             $this->require(is_string($image) && trim($image) !== '', 'Gambar varian Agni belum lengkap.');
@@ -89,6 +89,17 @@ class StockHubTiktokVariantPayload
     /** A validated safe writable contract; no cache fallback for missing remote values. */
     public function retained(array $target, bool $allowEmptyPackages = false): array
     {
+        return $this->validatedRows($target,$allowEmptyPackages,false);
+    }
+
+    /** Seller SKU is editable in a repair input; immutable IDs and attribute combinations remain unique. */
+    public function repairSnapshot(array $target, bool $allowEmptyPackages = false): array
+    {
+        return $this->validatedRows($target,$allowEmptyPackages,true);
+    }
+
+    private function validatedRows(array $target, bool $allowEmptyPackages, bool $allowDuplicateSellerSkus): array
+    {
         $this->require(is_array($target['skus'] ?? null) && array_is_list($target['skus']) && $target['skus'] !== [], 'Detail SKU TikTok belum lengkap.');
         $rows = []; $ids = []; $skus = []; $combinations = []; $schema = null; $warehouse = null;
         foreach ($target['skus'] as $sku) {
@@ -125,7 +136,10 @@ class StockHubTiktokVariantPayload
             $this->require($schema === null || $schema === $currentSchema, 'Atribut antar-SKU TikTok berbeda.'); $schema = $currentSchema;
             $this->require($warehouse === null || $warehouse === $inventory[0]['warehouse_id'], 'Gudang antar-SKU TikTok berbeda.'); $warehouse = $inventory[0]['warehouse_id'];
             $id = (string) $sku['id']; $key = $this->skuKey($sku['seller_sku']); $combo = $this->combination($attributes);
-            $this->require(! isset($ids[$id]) && ! isset($skus[$key]) && ! isset($combinations[$combo]), 'Identitas SKU atau kombinasi atribut TikTok berulang.');
+            $this->require(! isset($ids[$id]) && ! isset($combinations[$combo]), 'Identitas SKU atau kombinasi atribut TikTok berulang.');
+            if(!$allowDuplicateSellerSkus&&isset($skus[$key])){
+                throw new StockHubTiktokVariantIdentityRepairRequired('SKU TikTok berulang. Gunakan Perbaiki Mengikuti Agni.');
+            }
             $ids[$id] = true; $skus[$key] = true; $combinations[$combo] = true;
             $row = ['id' => $id, 'seller_sku' => $sku['seller_sku'], 'price' => $price, 'inventory' => [['warehouse_id' => $warehouse, 'quantity' => (int) $inventory[0]['quantity']]], 'sales_attributes' => $attributes];
             foreach (['sku_weight' => 'package_weight', 'sku_dimensions' => 'package_dimensions'] as $field => $fallback) {

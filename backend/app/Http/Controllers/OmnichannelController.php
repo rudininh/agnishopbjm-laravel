@@ -8497,6 +8497,13 @@ class OmnichannelController extends Controller
             'dry_run' => ['nullable'],
         ]);
 
+        if($this->boolString($data['apply_shopee']??true)==='true'&&$this->boolString($data['dry_run']??false)!=='true') {
+            // Check both saved identities before token refresh or the legacy joined detail loader.
+            $sourceIds=[DB::table('stock_master')->where('id',$data['stock_master_id'])->value('shopee_product_id'),
+                DB::table('sku_mappings')->where('stock_master_id',$data['stock_master_id'])->value('shopee_item_id')];
+            try { foreach(array_filter($sourceIds) as $sourceId)\App\Services\StockHubTiktokVariantInterlock::assertSourceSkuAvailable((string)$sourceId); }
+            catch(\DomainException $e){abort(409,$e->getMessage());}
+        }
         $stock = $this->loadSkuMappingVariantStockRow((int) $data['stock_master_id']);
         abort_if(! $stock, 404, 'Varian tidak ditemukan.');
 
@@ -9171,6 +9178,8 @@ class OmnichannelController extends Controller
     public function bulkUpdateShopeeEmptyVariantSkus(Request $request): JsonResponse
     {
         abort_if($request->input('account_key', self::PRIMARY_SHOPEE_ACCOUNT_KEY) !== self::PRIMARY_SHOPEE_ACCOUNT_KEY, 422, 'Pengisian template massal hanya untuk Shopee Agni. Gitashop memakai SKU sumber Agni.');
+        try { \App\Services\StockHubTiktokVariantInterlock::assertSourceSkuAvailable(); }
+        catch (\DomainException $e) { abort(409, $e->getMessage()); }
         set_time_limit(0);
         $this->ensureSkuMappingTables();
         $this->autoRefreshMarketplaceTokens();
@@ -9264,6 +9273,10 @@ class OmnichannelController extends Controller
         $channel = strtolower(trim((string) $data['channel']));
         $sellerSku = trim((string) $data['seller_sku']);
         abort_if($sellerSku === '', 422, 'SKU wajib diisi.');
+        if ($channel === 'shopee' && ($data['account_key'] ?? self::PRIMARY_SHOPEE_ACCOUNT_KEY) === self::PRIMARY_SHOPEE_ACCOUNT_KEY) {
+            try { \App\Services\StockHubTiktokVariantInterlock::assertSourceSkuAvailable((string)($data['item_id'] ?? '')); }
+            catch (\DomainException $e) { abort(409, $e->getMessage()); }
+        }
         if ($channel === 'shopee') {
             $accountKey = trim((string) ($data['account_key'] ?? self::PRIMARY_SHOPEE_ACCOUNT_KEY));
             $account = $this->resolveAccount($accountKey, 'shopee');
@@ -10131,6 +10144,9 @@ class OmnichannelController extends Controller
 
     private function submitTiktokPartialEditPayload(string $path, array $payload, array $context): array
     {
+        if (preg_match('~^/product/\d+/products/(\d+)/partial_edit$~D', $path, $match)) {
+            \App\Services\StockHubTiktokVariantInterlock::assertRepairAvailable(null, $match[1]);
+        }
         $config = $this->tiktokConfig();
         $accessToken = trim((string) ($context['access_token'] ?? ''));
         $shopCipher = trim((string) ($context['shop_cipher'] ?? ''));
@@ -11220,6 +11236,7 @@ class OmnichannelController extends Controller
 
     public function tiktokSubmitGeneratedPayload(Request $request): Response|JsonResponse
     {
+        \App\Services\StockHubTiktokVariantInterlock::assertRepairAvailable(null, trim((string) $request->input('product_id', '')));
         $this->ensureTiktokAuthTables();
 
         $data = $request->validate([

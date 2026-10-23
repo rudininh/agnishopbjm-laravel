@@ -99,6 +99,24 @@ class MarketplaceStockMirrorTransport
         return $this->request($this->context('tiktok-agnishopbjm', false, 6), false, 'POST', '/product/202309/products', [], $body, true, 8);
     }
 
+    public function prepareShopeeModelSkuUpdate(string $sourceId, string $expectedShopId): \Closure
+    {
+        if (!ctype_digit($sourceId)) { throw new \DomainException('Identitas produk Agni tidak valid.'); }
+        $context = $this->context('shopee-agnishopbjm', false, 6);
+        if ($context['shop_id'] !== $expectedShopId) { throw new \DomainException('Akun sumber Agni berubah sebelum pengiriman.'); }
+        // Freeze the account before the durable marker. One HTTP request, no retry or redirect.
+        return function (string $modelId, string $sku) use ($context, $sourceId): array {
+            $body = ['item_id'=>(int)$sourceId, 'model'=>[['model_id'=>(int)$modelId, 'model_sku'=>$sku]]];
+            $data = $this->request($context, true, 'POST', '/api/v2/product/update_model', [], $body, false, 8, true);
+            $models = $data['model'] ?? null;
+            if (!is_array($models) || !array_is_list($models) || count($models)!==1
+                || (string)($models[0]['model_id']??'')!==$modelId || ($models[0]['model_sku']??null)!==$sku) {
+                throw new \RuntimeException('Hasil update SKU Agni belum pasti. Periksa Status tanpa mengirim ulang.');
+            }
+            return $data;
+        };
+    }
+
     public function prepareTiktokProductCreation(string $expectedShopId): \Closure
     {
         $context = $this->context('tiktok-agnishopbjm', false, 6);
@@ -187,9 +205,14 @@ class MarketplaceStockMirrorTransport
             $url = rtrim($host, '/').$path.'?'.http_build_query($query, '', '&', PHP_QUERY_RFC3986);
             $response = 'GET' === $method ? $request->get($url) : $request->withBody(json_encode($body ?? [], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE), 'application/json')->post($url);
             $json = json_decode($response->body(), true, 512, JSON_BIGINT_AS_STRING);
+            if($shopee&&$variantEdit&&($response->successful()||($response->status()>=400&&$response->status()<500))
+                &&is_array($json)&&is_string($json['error']??null)&&trim($json['error'])!==''
+                &&(!array_key_exists('response',$json)||$json['response']===[])) {
+                throw new StockHubAgniSkuRejected('Shopee menolak update SKU. Periksa template dan akun sebelum mencoba permintaan baru.');
+            }
             $errorCode = is_array($json) ? filter_var($json['code'] ?? null, FILTER_VALIDATE_INT) : false;
             $returnedIdentity = is_array($json) && (! empty($json['data']['product_id']) || ! empty($json['data']['id']));
-            if ($variantEdit) {
+            if ($variantEdit && !$shopee) {
                 $rawCode = is_array($json) ? ($json['code'] ?? null) : null;
                 $errorCode = (is_int($rawCode) || (is_string($rawCode) && ctype_digit($rawCode))) ? filter_var($rawCode, FILTER_VALIDATE_INT) : false;
                 // Any nonempty result may contain acceptance evidence: it cannot establish a safe rejection.
@@ -216,7 +239,7 @@ class MarketplaceStockMirrorTransport
             }
 
             return $json[$shopee ? 'response' : 'data'];
-        } catch (StockHubTiktokProductRejected|StockHubTiktokReviewVersionUnavailable $e) {
+        } catch (StockHubTiktokProductRejected|StockHubTiktokReviewVersionUnavailable|StockHubAgniSkuRejected $e) {
             throw $e;
         } catch (\Throwable) {
             // Never expose a client exception: its URL contains signed credentials.

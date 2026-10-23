@@ -77,6 +77,15 @@ class StockHubTiktokVariantBatchTest extends TestCase
         return $this->postJson($this->base.'/runs/'.$run['run_id'].'/'.$action)->assertOk()->json('data');
     }
 
+    public function test_explicit_agni_workflow_includes_cached_complete_products_and_get_is_local(): void
+    {
+        $run = $this->postJson($this->base.'/runs', ['request_key'=>(string)Str::uuid(), 'workflow'=>'agni_sku_repair_then_tiktok'])->assertOk()->json('data');
+        $this->assertSame('agni_sku_repair_then_tiktok', $run['workflow']);
+        $this->assertSame(['queued','queued','queued','missing_product','unknown'],array_column($run['items'],'status'));
+        $this->assertSame(2,$run['summary']['products_processed']);
+        $this->getJson($this->base.'/runs/'.$run['run_id'])->assertOk(); Http::assertNothingSent();
+    }
+
     public function test_catalog_lifecycle_is_sequential_and_records_non_candidates_without_mutation(): void
     {
         $run = $this->start();
@@ -110,6 +119,17 @@ class StockHubTiktokVariantBatchTest extends TestCase
         while ($run['can_continue']) { $run = $this->action($run); }
         $this->getJson($this->base.'/active')->assertOk()->assertJsonPath('data', null);
         $this->assertNotSame($run['run_id'], $this->start()['run_id']);
+    }
+
+    public function test_start_provenance_distinguishes_original_key_recovery_from_competing_catalog_alias():void
+    {
+        $original=(string)Str::uuid();$competing=(string)Str::uuid();$run=$this->start($original);
+        $this->assertTrue($run['matches_request_key']??null);$this->assertTrue($this->start($original)['matches_request_key']);
+        $other=$this->start($competing);$this->assertSame($run['run_id'],$other['run_id']);$this->assertFalse($other['matches_request_key']);
+        $this->assertFalse($this->start($competing)['matches_request_key']);
+        $this->assertSame([],$this->starts);$this->assertSame([],$this->steps);
+        while($run['can_continue'])$run=$this->action($run);
+        $this->assertTrue($this->start($original)['matches_request_key']);$this->assertFalse($this->start($competing)['matches_request_key']);Http::assertNothingSent();
     }
 
     public function test_start_rejects_any_client_selection_or_account_input(): void

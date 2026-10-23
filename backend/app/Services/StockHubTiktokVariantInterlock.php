@@ -9,8 +9,78 @@ use Illuminate\Support\Str;
 /** Cross-entry protection for old bulk edits and durable stock-hub additions. */
 class StockHubTiktokVariantInterlock
 {
+    /** Retire only provably unsent work; attempted children must take the readback path. */
+    public static function retireUnattempted(string $kind,string $id,string $source): string
+    {
+        $table=match($kind){'addition'=>'stock_hub_tiktok_variant_runs','repair'=>'stock_hub_tiktok_variant_repair_runs'};
+        $ownGuards=$kind==='repair'?'stock_hub_tiktok_variant_repair_guards':'stock_hub_tiktok_variant_guards';
+        $hint=DB::table($table)->where('id',$id)->first();
+        // Historic repair audits have no durable child yet; the repair service adopts them readback-only.
+        if(!$hint)return $kind==='repair'?'attempted':'unknown';
+        return DB::transaction(function()use($table,$ownGuards,$hint,$id,$source){
+            $keys=['source:'.$source];if($hint->target_product_id!==null)$keys[]='target:'.$hint->target_product_id;
+            foreach(array_unique(['stock_hub_tiktok_variant_guards',$ownGuards]) as $guards)foreach($keys as $key){
+                DB::table($guards)->insertOrIgnore(['key'=>$key]);
+                $guard=DB::table($guards)->where('key',$key)->lockForUpdate()->first();
+                if($guard->owner&&$guard->expires_at>now()->toDateTimeString())return 'busy';
+            }
+            $row=DB::table($table)->where('id',$id)->lockForUpdate()->first();
+            if(!$row||(string)$row->source_product_id!==$source||$row->target_product_id!==$hint->target_product_id)return 'unknown';
+            if($row->attempted_at!==null)return 'attempted';
+            if($row->accepted_at!==null)return 'unknown';
+            $state=json_decode($row->state,true,512,JSON_THROW_ON_ERROR);
+            if(($state['batch_retired_before_attempt']??false)===true)return 'retired';
+            if(!in_array($row->status,['preparing','scanning','uploading','submitting','blocked'],true))return 'unknown';
+            $state['batch_retired_before_attempt']=true;$state['stage']='blocked';$state['message']='Persiapan lama dihentikan sebelum pengiriman; batch memeriksa SKU sumber terlebih dahulu.';
+            DB::table($table)->where('id',$id)->update(['status'=>'blocked','state'=>json_encode($state,JSON_THROW_ON_ERROR),'updated_at'=>now()]);
+            return 'retired';
+        });
+    }
+
+    public static function assertSourceSkuAvailable(?string $source = null, ?string $target = null, ?string $except = null): void
+    {
+        if (!Schema::hasTable('stock_hub_agni_sku_runs')) return;
+        $q=DB::table('stock_hub_agni_sku_runs')->where(function($q)use($source,$target){if($source!==null)$q->where('source_product_id',$source);if($target!==null)$q->orWhere('target_product_id',$target);});
+        if($except!==null)$q->where('id','<>',$except);
+        $q->where(function($q){$q->whereNotIn('status',['success','exists','rejected','blocked','reconciled'])->orWhere(function($q){$q->where('status','blocked')->whereExists(function($q){$q->selectRaw('1')->from('stock_hub_agni_sku_attempts as a')->whereColumn('a.run_id','stock_hub_agni_sku_runs.id')->whereNotNull('a.attempted_at');});});});
+        if($q->exists())throw new StockHubAgniSkuPending();
+    }
+
+    public static function assertRepairAvailable(?string $source = null, ?string $target = null, ?string $normalizationId = null): void
+    {
+        self::assertSourceSkuAvailable($source,$target,$normalizationId);
+        if (Schema::hasTable('stock_hub_tiktok_variant_repair_runs')) {
+            $q = DB::table('stock_hub_tiktok_variant_repair_runs');
+            $q->where(function ($q) use ($source, $target) { if ($source !== null) $q->where('source_product_id', $source); if ($target !== null) $q->orWhere('target_product_id', $target); });
+            $q->where(function ($q) { $q->whereIn('status', ['preparing','scanning','uploading','submitting','verifying','under_review','submitted_unverified'])
+                ->orWhere(fn($q) => $q->whereNotNull('attempted_at')->whereNotIn('status', ['success','exists','rejected'])); });
+            if ($q->exists()) throw new \DomainException('Perbaikan varian TikTok masih berjalan atau belum pasti. Pulihkan Perbaiki Mengikuti Agni dan Periksa Status.');
+        }
+        // Historic repair audit owns the target until exact dual-readback resolves it.
+        if (Schema::hasTable('tiktok_reconciliation_run_items')) {
+            $q = DB::table('tiktok_reconciliation_run_items')->where('action_type','agni_source_reconcile')->whereNotIn('status',['verified','rejected']);
+            if ($target !== null) $q->where('target_product_id',$target);
+            foreach ($q->get() as $item) {
+                $audit=json_decode($item->payload ?? '',true);
+                $auditSource=$audit['source']['id'] ?? null;
+                if ($target !== null || ($source !== null && (string)$auditSource === $source)) throw new \DomainException('Perbaikan operator sebelumnya belum terverifikasi. Pulihkan Perbaiki Mengikuti Agni dan Periksa Status.');
+            }
+        }
+    }
+
+    public static function assertAdditionAvailable(string $source, ?string $target = null, ?string $normalizationId = null): void
+    {
+        self::assertSourceSkuAvailable($source,$target,$normalizationId);
+        if (!Schema::hasTable('stock_hub_tiktok_variant_runs')) return;
+        $q=DB::table('stock_hub_tiktok_variant_runs')->where(function($q)use($source,$target){$q->where('source_product_id',$source);if($target!==null)$q->orWhere('target_product_id',$target);});
+        $q->where(function($q){$q->whereIn('status',['preparing','scanning','uploading','submitting','verifying','under_review','submitted_unverified'])
+            ->orWhere(fn($q)=>$q->whereNotNull('attempted_at')->whereNotIn('status',['success','partial','exists','rejected','reconciled_missing']));});
+        if($q->exists())throw new \DomainException('Penambahan varian masih berjalan atau belum pasti. Selesaikan status penambahan sebelum perbaikan.');
+    }
+
     public static function assertLegacyAvailable(string $target): void
     {
+        self::assertRepairAvailable(null, $target);
         if (! Schema::hasTable('stock_hub_tiktok_variant_runs')) { return; }
         $busy = DB::table('stock_hub_tiktok_variant_runs')->where('target_product_id', $target)
             ->where(function ($q) {

@@ -95,6 +95,7 @@ class MarketplaceApiService
     public function partialEditTiktokProduct(string $productId, array $payload): array
     {
         $productId = trim($productId);
+        StockHubTiktokVariantInterlock::assertRepairAvailable(null, $productId);
         $path = '/product/202509/products/'.$productId.'/partial_edit';
         $request = ['method' => 'POST', 'path' => $path, 'body' => $payload];
         $context = $this->activeTiktokContext();
@@ -217,6 +218,7 @@ class MarketplaceApiService
 
     public function updateShopeeModelSku(string $itemId, string $modelId, string $targetSku): array
     {
+        StockHubTiktokVariantInterlock::assertSourceSkuAvailable(trim($itemId));
         $itemId = trim($itemId);
         $modelId = trim($modelId);
         $body = [
