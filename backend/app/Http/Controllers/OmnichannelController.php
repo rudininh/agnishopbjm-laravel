@@ -4808,7 +4808,7 @@ class OmnichannelController extends Controller
         if ($account && str_starts_with($action, 'refresh-token-shopee')) {
             $result = $this->refreshShopeeToken($account);
 
-            return response()->json($this->maskShopeeTokenPayload($result), ($result['status'] ?? '') === 'ok' ? 200 : 422);
+            return response()->json($this->maskShopeeTokenPayload($result), in_array($result['status'] ?? '', ['ok', 'partner_key_expired'], true) ? 200 : 422);
         }
 
         if ($account && str_starts_with($action, 'auth-tiktok')) {
@@ -4941,7 +4941,9 @@ class OmnichannelController extends Controller
             ? 'Authorization berhasil. Kamu bisa kembali ke dashboard.'
             : ($result['message'] ?? 'Shopee mengembalikan error.');
 
-        return response($this->renderShopeeCallbackPage($title, $message, $result), $ok ? 200 : 422)
+        $statusCode = $ok || ($result['status'] ?? '') === 'partner_key_expired' ? 200 : 422;
+
+        return response($this->renderShopeeCallbackPage($title, $message, $result), $statusCode)
             ->header('Content-Type', 'text/html');
     }
 
@@ -12002,7 +12004,11 @@ class OmnichannelController extends Controller
             return '<tr><th>'.e($label).'</th><td>'.e((string) ($value ?: '-')).'</td></tr>';
         })->implode('');
 
-        return '<!doctype html><html lang="id"><head><meta charset="utf-8"><title>'.e($title).'</title><style>body{font-family:Arial,sans-serif;padding:32px;line-height:1.5;color:#0f172a}h1{margin-bottom:12px}table{border-collapse:collapse;width:100%;margin:18px 0;background:#fff}th,td{border:1px solid #d9e2ec;padding:10px 12px;text-align:left}th{width:180px;background:#f8fafc}a{color:#0f5fc7}</style></head><body><h1>'.e($title).'</h1><p>'.e($message).'</p><table>'.$tableRows.'</table><p><a href="/dashboard">Kembali ke Dashboard</a></p></body></html>';
+        $consoleLink = ! empty($result['redirect_url'])
+            ? '<p><a href="'.e((string) $result['redirect_url']).'">Buka Shopee Open Platform Console</a></p>'
+            : '';
+
+        return '<!doctype html><html lang="id"><head><meta charset="utf-8"><title>'.e($title).'</title><style>body{font-family:Arial,sans-serif;padding:32px;line-height:1.5;color:#0f172a}h1{margin-bottom:12px}table{border-collapse:collapse;width:100%;margin:18px 0;background:#fff}th,td{border:1px solid #d9e2ec;padding:10px 12px;text-align:left}th{width:180px;background:#f8fafc}a{color:#0f5fc7}</style></head><body><h1>'.e($title).'</h1><p>'.e($message).'</p><table>'.$tableRows.'</table>'.$consoleLink.'<p><a href="/dashboard">Kembali ke Dashboard</a></p></body></html>';
     }
 
     private function buildShopeeAuthUrl(array $account): string
@@ -12112,6 +12118,13 @@ class OmnichannelController extends Controller
             'message' => $response->body(),
         ];
 
+        if ($safeExpiry = $this->shopeePartnerKeyExpiryResult($data, 'get-token-'.$callback->account_key)) {
+            return $safeExpiry + [
+                'account_key' => $callback->account_key,
+                'account_name' => $callback->account_name,
+            ];
+        }
+
         if (($data['error'] ?? '') === '' && ! empty($data['access_token'])) {
             $this->storeShopeeToken($data, $config['partner_id'], $callback);
 
@@ -12220,6 +12233,13 @@ class OmnichannelController extends Controller
             'message' => $response->body(),
         ];
 
+        if ($safeExpiry = $this->shopeePartnerKeyExpiryResult($data, 'refresh-token-'.$account['key'])) {
+            return $safeExpiry + [
+                'account_key' => $account['key'],
+                'account_name' => $account['name'],
+            ];
+        }
+
         if (($data['error'] ?? '') === '' && ! empty($data['access_token']) && ! empty($data['refresh_token'])) {
             $this->storeShopeeRefreshToken($data, $config['partner_id'], $account, $token);
 
@@ -12241,6 +12261,21 @@ class OmnichannelController extends Controller
             'account_key' => $account['key'],
             'account_name' => $account['name'],
             ...$data,
+        ];
+    }
+
+    private function shopeePartnerKeyExpiryResult(array $data, string $action): ?array
+    {
+        if (($data['message'] ?? null) !== 'API partner key has expired') {
+            return null;
+        }
+
+        return [
+            'status' => 'partner_key_expired',
+            'error' => 'partner_key_expired',
+            'action' => $action,
+            'message' => 'Partner Key Shopee sudah kedaluwarsa. Perbarui key di Shopee Open Platform Console.',
+            'redirect_url' => (string) config('marketplace_accounts.shopee_partner_console_url', 'https://open.shopee.com/'),
         ];
     }
 
