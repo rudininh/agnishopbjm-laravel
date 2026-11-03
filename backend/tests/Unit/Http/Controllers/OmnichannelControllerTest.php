@@ -304,6 +304,93 @@ class OmnichannelControllerTest extends TestCase
         }
     }
 
+    public function test_shopee_partner_key_expired_during_refresh_returns_safe_console_redirect(): void
+    {
+        $this->configureDistinctShopeeAccounts();
+        $this->createShopeeTokensTable();
+        DB::table('shopee_tokens')->insert([
+            'account_key' => 'shopee-gitacollectionbjm',
+            'account_name' => 'Shopee GitaCollectionBJM',
+            'partner_id' => 9988,
+            'shop_id' => 7766,
+            'refresh_token' => 'test-refresh-token',
+            'refresh_token_expire_at' => now()->addDay(),
+            'is_active' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        Http::fake([
+            'https://gita-partner.example/*' => Http::response([
+                'error' => 'error_param',
+                'message' => 'API partner key has expired',
+            ], 200),
+        ]);
+
+        try {
+            $this->postJson('/api/omnichannel/refresh-token-shopee-gitacollectionbjm')
+                ->assertOk()
+                ->assertJsonPath('status', 'partner_key_expired')
+                ->assertJsonPath('error', 'partner_key_expired')
+                ->assertJsonPath('redirect_url', 'https://open.shopee.com/')
+                ->assertJsonMissing(['message' => 'API partner key has expired']);
+        } finally {
+            Schema::dropIfExists('shopee_tokens');
+        }
+    }
+
+    public function test_shopee_partner_key_expired_during_token_exchange_returns_safe_console_redirect(): void
+    {
+        $this->configureDistinctShopeeAccounts();
+        $this->createShopeeCallbacksTable();
+        DB::table('shopee_callbacks')->insert([
+            'account_key' => 'shopee-gitacollectionbjm',
+            'account_name' => 'Shopee GitaCollectionBJM',
+            'code' => 'callback-code',
+            'shop_id' => 7766,
+            'partner_id' => 9988,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        Http::fake([
+            'https://gita-partner.example/*' => Http::response([
+                'error' => 'error_param',
+                'message' => 'API partner key has expired',
+            ], 200),
+        ]);
+
+        try {
+            $this->postJson('/api/omnichannel/get-token-shopee-gitacollectionbjm')
+                ->assertOk()
+                ->assertJsonPath('status', 'partner_key_expired')
+                ->assertJsonPath('error', 'partner_key_expired')
+                ->assertJsonPath('redirect_url', 'https://open.shopee.com/')
+                ->assertJsonMissing(['message' => 'API partner key has expired']);
+        } finally {
+            Schema::dropIfExists('shopee_callbacks');
+        }
+    }
+
+    public function test_shopee_partner_key_expiry_callback_page_links_to_console_without_raw_error(): void
+    {
+        $this->configureDistinctShopeeAccounts();
+        $this->createShopeeCallbacksTable();
+        Http::fake([
+            'https://gita-partner.example/*' => Http::response([
+                'error' => 'error_param',
+                'message' => 'API partner key has expired',
+            ], 200),
+        ]);
+
+        try {
+            $this->get('/api/shopee/callback?code=callback-code&shop_id=7766&account=shopee-gitacollectionbjm')
+                ->assertOk()
+                ->assertSee('https://open.shopee.com/')
+                ->assertDontSee('API partner key has expired');
+        } finally {
+            Schema::dropIfExists('shopee_callbacks');
+        }
+    }
+
     public function test_shopee_account_incomplete_gita_config_is_sanitized_and_does_not_affect_primary_auth(): void
     {
         $this->configureDistinctShopeeAccounts();
