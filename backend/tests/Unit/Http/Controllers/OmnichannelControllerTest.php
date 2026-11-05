@@ -338,6 +338,42 @@ class OmnichannelControllerTest extends TestCase
         }
     }
 
+    public function test_connect_shopee_recognizes_the_full_partner_key_expiry_message_and_redirects_to_console(): void
+    {
+        $this->configureDistinctShopeeAccounts();
+        $this->createShopeeTokensTable();
+        DB::table('shopee_tokens')->insert([
+            'account_key' => 'shopee-agnishopbjm',
+            'account_name' => 'Shopee AgniShopBJM',
+            'partner_id' => 1122,
+            'shop_id' => 7766,
+            'access_token' => 'expired-access-token',
+            'access_token_expire_at' => now()->subMinute(),
+            'refresh_token' => 'test-refresh-token',
+            'refresh_token_expire_at' => now()->addDay(),
+            'is_active' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        Http::fake([
+            'https://primary-partner.example/*' => Http::response([
+                'error' => 'error_param',
+                'message' => 'Your API partner key has expired, please reset the Live API Partner Key in Console to get a new valid partner key to call open api.',
+            ], 200),
+        ]);
+
+        try {
+            $this->postJson('/api/omnichannel/connect-shopee-agnishopbjm')
+                ->assertOk()
+                ->assertJsonPath('status', 'partner_key_expired')
+                ->assertJsonPath('error', 'partner_key_expired')
+                ->assertJsonPath('redirect_url', 'https://open.shopee.com/')
+                ->assertJsonMissing(['message' => 'Your API partner key has expired, please reset the Live API Partner Key in Console to get a new valid partner key to call open api.']);
+        } finally {
+            Schema::dropIfExists('shopee_tokens');
+        }
+    }
+
     public function test_shopee_partner_key_expired_during_token_exchange_returns_safe_console_redirect(): void
     {
         $this->configureDistinctShopeeAccounts();
