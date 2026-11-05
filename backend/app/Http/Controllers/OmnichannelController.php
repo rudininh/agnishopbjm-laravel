@@ -12021,8 +12021,11 @@ class OmnichannelController extends Controller
             return '<tr><th>'.e($label).'</th><td>'.e((string) ($value ?: '-')).'</td></tr>';
         })->implode('');
 
+        $redirectLabel = ($result['status'] ?? '') === 'partner_key_expired'
+            ? 'Buka halaman authorization Shopee'
+            : 'Buka Shopee Open Platform Console';
         $consoleLink = ! empty($result['redirect_url'])
-            ? '<p><a href="'.e((string) $result['redirect_url']).'">Buka Shopee Open Platform Console</a></p>'
+            ? '<p><a href="'.e((string) $result['redirect_url']).'">'.e($redirectLabel).'</a></p>'
             : '';
 
         return '<!doctype html><html lang="id"><head><meta charset="utf-8"><title>'.e($title).'</title><style>body{font-family:Arial,sans-serif;padding:32px;line-height:1.5;color:#0f172a}h1{margin-bottom:12px}table{border-collapse:collapse;width:100%;margin:18px 0;background:#fff}th,td{border:1px solid #d9e2ec;padding:10px 12px;text-align:left}th{width:180px;background:#f8fafc}a{color:#0f5fc7}</style></head><body><h1>'.e($title).'</h1><p>'.e($message).'</p><table>'.$tableRows.'</table>'.$consoleLink.'<p><a href="/dashboard">Kembali ke Dashboard</a></p></body></html>';
@@ -12100,9 +12103,8 @@ class OmnichannelController extends Controller
 
     private function exchangeShopeeToken(object $callback): array
     {
-        $config = $this->shopeeConfig([
-            'key' => (string) ($callback->account_key ?? 'shopee-agnishopbjm'),
-        ]);
+        $account = $this->resolveAccount((string) ($callback->account_key ?? 'shopee-agnishopbjm'), 'shopee');
+        $config = $this->shopeeConfig($account);
         $path = '/api/v2/auth/token/get';
         $timestamp = time();
         $sign = $this->generateShopeeSign($config['partner_id'], $config['partner_key'], $path, $timestamp);
@@ -12135,7 +12137,7 @@ class OmnichannelController extends Controller
             'message' => $response->body(),
         ];
 
-        if ($safeExpiry = $this->shopeePartnerKeyExpiryResult($data, 'get-token-'.$callback->account_key)) {
+        if ($safeExpiry = $this->shopeePartnerKeyExpiryResult($data, 'get-token-'.$callback->account_key, $account)) {
             return $safeExpiry + [
                 'account_key' => $callback->account_key,
                 'account_name' => $callback->account_name,
@@ -12250,7 +12252,7 @@ class OmnichannelController extends Controller
             'message' => $response->body(),
         ];
 
-        if ($safeExpiry = $this->shopeePartnerKeyExpiryResult($data, 'refresh-token-'.$account['key'])) {
+        if ($safeExpiry = $this->shopeePartnerKeyExpiryResult($data, 'refresh-token-'.$account['key'], $account)) {
             return $safeExpiry + [
                 'account_key' => $account['key'],
                 'account_name' => $account['name'],
@@ -12281,7 +12283,7 @@ class OmnichannelController extends Controller
         ];
     }
 
-    private function shopeePartnerKeyExpiryResult(array $data, string $action): ?array
+    private function shopeePartnerKeyExpiryResult(array $data, string $action, array $account): ?array
     {
         $message = strtolower(trim((string) ($data['message'] ?? '')));
         if (! str_starts_with($message, 'api partner key has expired')
@@ -12293,8 +12295,8 @@ class OmnichannelController extends Controller
             'status' => 'partner_key_expired',
             'error' => 'partner_key_expired',
             'action' => $action,
-            'message' => 'Partner Key Shopee sudah kedaluwarsa. Perbarui key di Shopee Open Platform Console.',
-            'redirect_url' => (string) config('marketplace_accounts.shopee_partner_console_url', 'https://open.shopee.com/'),
+            'message' => 'Partner Key Shopee sudah kedaluwarsa. Lanjutkan authorization ulang untuk akun ini.',
+            'redirect_url' => $this->buildShopeeAuthUrl($account),
         ];
     }
 

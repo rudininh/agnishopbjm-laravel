@@ -1,7 +1,6 @@
 <?php
 
 return [
-    'shopee_partner_console_url' => trim((string) env('SHOPEE_PARTNER_CONSOLE_URL', 'https://open.shopee.com/')),
     'accounts' => [
         'shopee-agnishopbjm' => [
             'name' => 'Shopee AgniShopBJM',

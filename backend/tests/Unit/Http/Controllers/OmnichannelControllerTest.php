@@ -304,7 +304,7 @@ class OmnichannelControllerTest extends TestCase
         }
     }
 
-    public function test_shopee_partner_key_expired_during_refresh_returns_safe_console_redirect(): void
+    public function test_shopee_partner_key_expired_during_gita_refresh_returns_gita_authorization_redirect(): void
     {
         $this->configureDistinctShopeeAccounts();
         $this->createShopeeTokensTable();
@@ -327,18 +327,26 @@ class OmnichannelControllerTest extends TestCase
         ]);
 
         try {
-            $this->postJson('/api/omnichannel/refresh-token-shopee-gitacollectionbjm')
+            $response = $this->postJson('/api/omnichannel/refresh-token-shopee-gitacollectionbjm')
                 ->assertOk()
                 ->assertJsonPath('status', 'partner_key_expired')
                 ->assertJsonPath('error', 'partner_key_expired')
-                ->assertJsonPath('redirect_url', 'https://open.shopee.com/')
                 ->assertJsonMissing(['message' => 'API partner key has expired']);
+            $query = [];
+            parse_str((string) parse_url((string) $response->json('redirect_url'), PHP_URL_QUERY), $query);
+            $callbackQuery = [];
+            parse_str((string) parse_url((string) ($query['redirect'] ?? ''), PHP_URL_QUERY), $callbackQuery);
+
+            $this->assertSame('https://gita-partner.example/api/v2/shop/auth_partner', strtok((string) $response->json('redirect_url'), '?'));
+            $this->assertSame('9988', $query['partner_id'] ?? null);
+            $this->assertSame('https://gita.example/api/shopee/callback', strtok((string) ($query['redirect'] ?? ''), '?'));
+            $this->assertSame('shopee-gitacollectionbjm', $callbackQuery['account'] ?? null);
         } finally {
             Schema::dropIfExists('shopee_tokens');
         }
     }
 
-    public function test_connect_shopee_recognizes_the_full_partner_key_expiry_message_and_redirects_to_console(): void
+    public function test_connect_shopee_recognizes_the_full_partner_key_expiry_message_and_returns_agni_authorization_redirect(): void
     {
         $this->configureDistinctShopeeAccounts();
         $this->createShopeeTokensTable();
@@ -363,18 +371,26 @@ class OmnichannelControllerTest extends TestCase
         ]);
 
         try {
-            $this->postJson('/api/omnichannel/connect-shopee-agnishopbjm')
+            $response = $this->postJson('/api/omnichannel/connect-shopee-agnishopbjm')
                 ->assertOk()
                 ->assertJsonPath('status', 'partner_key_expired')
                 ->assertJsonPath('error', 'partner_key_expired')
-                ->assertJsonPath('redirect_url', 'https://open.shopee.com/')
                 ->assertJsonMissing(['message' => 'Your API partner key has expired, please reset the Live API Partner Key in Console to get a new valid partner key to call open api.']);
+            $query = [];
+            parse_str((string) parse_url((string) $response->json('redirect_url'), PHP_URL_QUERY), $query);
+            $callbackQuery = [];
+            parse_str((string) parse_url((string) ($query['redirect'] ?? ''), PHP_URL_QUERY), $callbackQuery);
+
+            $this->assertSame('https://primary-partner.example/api/v2/shop/auth_partner', strtok((string) $response->json('redirect_url'), '?'));
+            $this->assertSame('1122', $query['partner_id'] ?? null);
+            $this->assertSame('https://primary.example/api/shopee/callback', strtok((string) ($query['redirect'] ?? ''), '?'));
+            $this->assertSame('shopee-agnishopbjm', $callbackQuery['account'] ?? null);
         } finally {
             Schema::dropIfExists('shopee_tokens');
         }
     }
 
-    public function test_shopee_partner_key_expired_during_token_exchange_returns_safe_console_redirect(): void
+    public function test_shopee_partner_key_expired_during_token_exchange_returns_account_authorization_redirect(): void
     {
         $this->configureDistinctShopeeAccounts();
         $this->createShopeeCallbacksTable();
@@ -395,18 +411,26 @@ class OmnichannelControllerTest extends TestCase
         ]);
 
         try {
-            $this->postJson('/api/omnichannel/get-token-shopee-gitacollectionbjm')
+            $response = $this->postJson('/api/omnichannel/get-token-shopee-gitacollectionbjm')
                 ->assertOk()
                 ->assertJsonPath('status', 'partner_key_expired')
                 ->assertJsonPath('error', 'partner_key_expired')
-                ->assertJsonPath('redirect_url', 'https://open.shopee.com/')
                 ->assertJsonMissing(['message' => 'API partner key has expired']);
+            $query = [];
+            parse_str((string) parse_url((string) $response->json('redirect_url'), PHP_URL_QUERY), $query);
+            $callbackQuery = [];
+            parse_str((string) parse_url((string) ($query['redirect'] ?? ''), PHP_URL_QUERY), $callbackQuery);
+
+            $this->assertSame('https://gita-partner.example/api/v2/shop/auth_partner', strtok((string) $response->json('redirect_url'), '?'));
+            $this->assertSame('9988', $query['partner_id'] ?? null);
+            $this->assertSame('https://gita.example/api/shopee/callback', strtok((string) ($query['redirect'] ?? ''), '?'));
+            $this->assertSame('shopee-gitacollectionbjm', $callbackQuery['account'] ?? null);
         } finally {
             Schema::dropIfExists('shopee_callbacks');
         }
     }
 
-    public function test_shopee_partner_key_expiry_callback_page_links_to_console_without_raw_error(): void
+    public function test_shopee_partner_key_expiry_callback_page_links_to_account_authorization_without_raw_error(): void
     {
         $this->configureDistinctShopeeAccounts();
         $this->createShopeeCallbacksTable();
@@ -420,7 +444,7 @@ class OmnichannelControllerTest extends TestCase
         try {
             $this->get('/api/shopee/callback?code=callback-code&shop_id=7766&account=shopee-gitacollectionbjm')
                 ->assertOk()
-                ->assertSee('https://open.shopee.com/')
+                ->assertSee('https://gita-partner.example/api/v2/shop/auth_partner')
                 ->assertDontSee('API partner key has expired');
         } finally {
             Schema::dropIfExists('shopee_callbacks');
