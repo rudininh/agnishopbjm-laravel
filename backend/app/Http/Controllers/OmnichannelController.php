@@ -12266,7 +12266,9 @@ class OmnichannelController extends Controller
 
     private function shopeePartnerKeyExpiryResult(array $data, string $action): ?array
     {
-        if (($data['message'] ?? null) !== 'API partner key has expired') {
+        $message = strtolower(trim((string) ($data['message'] ?? '')));
+        if (! str_starts_with($message, 'api partner key has expired')
+            && ! str_starts_with($message, 'your api partner key has expired')) {
             return null;
         }
 
