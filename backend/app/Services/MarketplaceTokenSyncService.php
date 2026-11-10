@@ -11,6 +11,8 @@ use Illuminate\Support\Facades\Schema;
 class MarketplaceTokenSyncService
 {
     private const ALLOWED_ACCOUNT_KEYS = ['shopee-agnishopbjm', 'shopee-gitacollectionbjm', 'tiktok-agnishopbjm'];
+
+    private const SHOPEE_AGNI_CONFIGURATION_FIELD = 'shopee_agnishopbjm_configuration';
     public function pullFromStb(): array
     {
         $summary = $this->summary();
@@ -95,6 +97,7 @@ class MarketplaceTokenSyncService
 
         $summary['shopee'] = $this->sanitizeChannelSummary((array) ($payload['shopee'] ?? []));
         $summary['tiktok'] = $this->sanitizeChannelSummary((array) ($payload['tiktok'] ?? []));
+        $summary['shopee_configuration'] = $this->sanitizeConfigurationSummary((array) ($payload['shopee_configuration'] ?? []));
         $status = (string) ($payload['status'] ?? 'success');
         if (! in_array($status, ['success', 'unchanged', 'skipped'], true)) {
             $status = 'success';
@@ -113,7 +116,10 @@ class MarketplaceTokenSyncService
 
         $summary['shopee'] = $this->importShopeeTokens((array) ($payload['shopee'] ?? []));
         $summary['tiktok'] = $this->importTiktokTokens((array) ($payload['tiktok'] ?? []));
-        $status = $summary['shopee']['updated'] > 0 || $summary['tiktok']['updated'] > 0 ? 'success' : 'unchanged';
+        $summary['shopee_configuration'] = $this->importShopeeAgniConfiguration((array) ($payload[self::SHOPEE_AGNI_CONFIGURATION_FIELD] ?? []));
+        $status = $summary['shopee']['updated'] > 0 || $summary['tiktok']['updated'] > 0 || $summary['shopee_configuration']['status'] === 'updated'
+            ? 'success'
+            : 'unchanged';
 
         return $this->saveStatus($summary, $status, $status === 'success'
             ? 'Token marketplace dari PC berhasil disinkronisasi ke STB.'
@@ -122,7 +128,7 @@ class MarketplaceTokenSyncService
 
     public function exportForStb(): array
     {
-        return [
+        $payload = [
             'source' => 'pc',
             'generated_at' => now()->toISOString(),
             'shopee' => $this->activeTokens('shopee_tokens', [
@@ -151,6 +157,20 @@ class MarketplaceTokenSyncService
                 'updated_at',
             ], ['account_key', 'shop_id', 'updated_at']),
         ];
+
+        try {
+            $context = app(MarketplaceAccountRegistry::class)->shopeeContext('shopee-agnishopbjm');
+            $payload[self::SHOPEE_AGNI_CONFIGURATION_FIELD] = [
+                'partner_id' => $context['partner_id'],
+                'partner_key' => $context['partner_key'],
+                'host' => $context['host'],
+                'redirect_url' => $context['redirect_url'],
+            ];
+        } catch (\Throwable) {
+            $payload[self::SHOPEE_AGNI_CONFIGURATION_FIELD] = [];
+        }
+
+        return $payload;
     }
 
     public function status(): array
@@ -370,6 +390,66 @@ class MarketplaceTokenSyncService
         return $summary;
     }
 
+    private function importShopeeAgniConfiguration(array $configuration): array
+    {
+        $fields = ['partner_id', 'partner_key', 'host', 'redirect_url'];
+        foreach ($fields as $field) {
+            if (! is_scalar($configuration[$field] ?? null) || trim((string) $configuration[$field]) === '') {
+                return ['status' => 'skipped'];
+            }
+        }
+
+        $partnerId = (int) $configuration['partner_id'];
+        $partnerKey = trim((string) $configuration['partner_key']);
+        $host = rtrim(trim((string) $configuration['host']), '/');
+        $redirectUrl = trim((string) $configuration['redirect_url']);
+        if ($partnerId <= 0 || filter_var($host, FILTER_VALIDATE_URL) === false || filter_var($redirectUrl, FILTER_VALIDATE_URL) === false
+            || ! Schema::hasTable('shopee_config') || ! Schema::hasColumns('shopee_config', ['partner_id', 'partner_key', 'host', 'redirect_url', 'is_active'])) {
+            return ['status' => 'skipped'];
+        }
+
+        $current = DB::table('shopee_config')
+            ->whereRaw('COALESCE(is_active, true) = true')
+            ->orderByDesc('id')
+            ->first();
+        if ($current
+            && (int) $current->partner_id === $partnerId
+            && hash_equals((string) $current->partner_key, $partnerKey)
+            && rtrim((string) $current->host, '/') === $host
+            && (string) ($current->redirect_url ?? '') === $redirectUrl) {
+            return ['status' => 'unchanged'];
+        }
+
+        DB::transaction(function () use ($partnerId, $partnerKey, $host, $redirectUrl): void {
+            $now = now();
+            DB::table('shopee_config')
+                ->whereRaw('COALESCE(is_active, true) = true')
+                ->update(['is_active' => DB::raw('false'), 'updated_at' => $now]);
+
+            $existing = DB::table('shopee_config')->where('partner_id', $partnerId)->orderByDesc('id')->first();
+            $values = [
+                'partner_key' => $partnerKey,
+                'host' => $host,
+                'redirect_url' => $redirectUrl,
+                'is_active' => DB::raw('true'),
+                'updated_at' => $now,
+            ];
+            if ($existing) {
+                DB::table('shopee_config')->where('id', $existing->id)->update($values);
+
+                return;
+            }
+
+            DB::table('shopee_config')->insert([
+                'partner_id' => $partnerId,
+                ...$values,
+                'created_at' => $now,
+            ]);
+        });
+
+        return ['status' => 'updated'];
+    }
+
     private function isAllowedAccountKey(string $accountKey): bool
     {
         return in_array($accountKey, self::ALLOWED_ACCOUNT_KEYS, true);
@@ -382,6 +462,13 @@ class MarketplaceTokenSyncService
             'unchanged' => max(0, (int) ($summary['unchanged'] ?? 0)),
             'skipped_stale' => max(0, (int) ($summary['skipped_stale'] ?? 0)),
         ];
+    }
+
+    private function sanitizeConfigurationSummary(array $summary): array
+    {
+        $status = (string) ($summary['status'] ?? 'skipped');
+
+        return ['status' => in_array($status, ['updated', 'unchanged', 'skipped'], true) ? $status : 'skipped'];
     }
 
     private function hasRequiredTokenFields(array $token): bool
@@ -410,6 +497,7 @@ class MarketplaceTokenSyncService
             'source' => $source,
             'shopee' => $this->emptyChannelSummary(),
             'tiktok' => $this->emptyChannelSummary(),
+            'shopee_configuration' => ['status' => 'skipped'],
             'last_succeeded_at' => null,
             'message' => 'Belum ada sinkron token STB.',
         ];

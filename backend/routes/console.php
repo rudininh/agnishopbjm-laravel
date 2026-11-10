@@ -40,6 +40,7 @@ Artisan::command('agnishop:push-marketplace-tokens-to-stb', function (): int {
     $this->info('Token marketplace PC ke STB: '.($result['status'] ?? 'error'));
     $this->line($result['message'] ?? '');
     $this->line('Shopee updated='.(int) ($result['shopee']['updated'] ?? 0));
+    $this->line('Shopee configuration='.(string) ($result['shopee_configuration']['status'] ?? 'skipped'));
     $this->line('TikTok updated='.(int) ($result['tiktok']['updated'] ?? 0));
 
     return in_array(($result['status'] ?? 'error'), ['success', 'unchanged', 'skipped'], true) ? 0 : 1;

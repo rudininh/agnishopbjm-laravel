@@ -378,6 +378,85 @@ class MarketplaceTokenSyncTest extends TestCase
         $this->assertStringNotContainsString('new-refresh', $response->getContent());
     }
 
+    public function test_pc_push_includes_only_the_primary_shopee_configuration_for_authenticated_stb_import(): void
+    {
+        $this->configurePcTokenPush();
+        config([
+            'marketplace_accounts.accounts.shopee-agnishopbjm.credentials' => [
+                'partner_id' => 2013107,
+                'partner_key' => 'new-primary-partner-key',
+                'host' => 'https://partner.shopeemobile.com',
+                'redirect_url' => 'https://agnishop.test/api/shopee/callback',
+            ],
+        ]);
+        DB::table('shopee_config')->delete();
+        Http::fake([
+            'http://10.0.0.2:8088/*' => Http::response([
+                'status' => 'success',
+                'source' => 'pc',
+                'shopee' => ['updated' => 0, 'unchanged' => 0, 'skipped_stale' => 0],
+                'tiktok' => ['updated' => 0, 'unchanged' => 0, 'skipped_stale' => 0],
+                'shopee_configuration' => ['status' => 'updated'],
+            ], 200),
+        ]);
+
+        $result = app(\App\Services\MarketplaceTokenSyncService::class)->pushToStb();
+
+        $this->assertSame('success', $result['status']);
+        $this->assertSame('updated', $result['shopee_configuration']['status']);
+        $this->assertStringNotContainsString('new-primary-partner-key', json_encode($result));
+        Http::assertSent(function ($request): bool {
+            $data = $request->data();
+
+            return $request->hasHeader('Authorization', 'Bearer push-secret')
+                && $data['source'] === 'pc'
+                && $data['shopee_agnishopbjm_configuration'] === [
+                    'partner_id' => 2013107,
+                    'partner_key' => 'new-primary-partner-key',
+                    'host' => 'https://partner.shopeemobile.com',
+                    'redirect_url' => 'https://agnishop.test/api/shopee/callback',
+                ];
+        });
+    }
+
+    public function test_stb_import_updates_primary_shopee_configuration_without_returning_the_partner_key(): void
+    {
+        $this->configureStbTokenImport();
+        DB::table('shopee_config')->updateOrInsert(
+            ['partner_id' => 2013107],
+            [
+                'partner_key' => 'old-primary-partner-key',
+                'host' => 'https://partner.shopeemobile.com',
+                'redirect_url' => 'https://agnishop.test/api/shopee/callback',
+                'is_active' => true,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]
+        );
+
+        $payload = $this->pcPayload([]);
+        $payload['shopee_agnishopbjm_configuration'] = [
+            'partner_id' => 2013107,
+            'partner_key' => 'new-primary-partner-key',
+            'host' => 'https://partner.shopeemobile.com',
+            'redirect_url' => 'https://agnishop.test/api/shopee/callback',
+        ];
+
+        $response = $this->withToken('push-secret')
+            ->postJson('/api/runtime/marketplace-token-import', $payload)
+            ->assertOk()
+            ->assertJsonPath('status', 'success')
+            ->assertJsonPath('shopee_configuration.status', 'updated');
+
+        $this->assertDatabaseHas('shopee_config', [
+            'partner_id' => 2013107,
+            'partner_key' => 'new-primary-partner-key',
+            'is_active' => true,
+        ]);
+        $this->assertStringNotContainsString('new-primary-partner-key', $response->getContent());
+        $this->assertStringNotContainsString('old-primary-partner-key', $response->getContent());
+    }
+
     public function test_stb_import_skips_unknown_account_key_without_persisting_it(): void
     {
         $this->configureStbTokenImport();
@@ -453,11 +532,13 @@ class MarketplaceTokenSyncTest extends TestCase
                 'source' => 'pc',
                 'shopee' => ['updated' => 1, 'unchanged' => 0, 'skipped_stale' => 0],
                 'tiktok' => ['updated' => 0, 'unchanged' => 0, 'skipped_stale' => 0],
+                'shopee_configuration' => ['status' => 'updated'],
             ], 200),
         ]);
 
         $this->artisan('agnishop:push-marketplace-tokens-to-stb')
             ->expectsOutput('Token marketplace PC ke STB: success')
+            ->expectsOutput('Shopee configuration=updated')
             ->doesntExpectOutputToContain('command-access')
             ->doesntExpectOutputToContain('command-refresh')
             ->assertExitCode(0);
